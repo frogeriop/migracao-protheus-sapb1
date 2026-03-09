@@ -1,0 +1,386 @@
+{
+  "SA1010": {
+    "sourceTable": "SA1010",
+    "targetObject": "BusinessPartners",
+    "fields": [
+      {
+        "source": "a1_cod",
+        "target": "CardCode",
+        "rule": {
+          "type": "prefix",
+          "value": "C"
+        }
+      },
+      {
+        "source": "a1_nome",
+        "target": "CardName"
+      },
+      {
+        "source": "a1_cgc",
+        "target": "FederalTaxID"
+      },
+      {
+        "source": "a1_tel",
+        "target": "Phone1"
+      },
+      {
+        "source": "a1_email",
+        "target": "EmailAddress"
+      },
+      {
+        "source": "a1_cep",
+        "target": "BPAddresses.ZipCode"
+      },
+      {
+        "source": "a1_end",
+        "target": "BPAddresses.Street",
+        "rule": {
+          "type": "address_part",
+          "part": "street"
+        }
+      },
+      {
+        "source": "a1_pais",
+        "target": "BPAddresses.Country"
+      },
+      {
+        "source": "a1_mun",
+        "target": "BPAddresses.City"
+      },
+      {
+        "source": "a1_end",
+        "target": "BPAddresses.StreetNo",
+        "rule": {
+          "type": "address_part",
+          "part": "number"
+        }
+      },
+      {
+        "source": "a1_bairro",
+        "target": "BPAddresses.Block",
+        "rule": {
+          "type": "address_part",
+          "part": "complement"
+        }
+      },
+      {
+        "source": "a1_end",
+        "target": "BPAddresses.BuildingFloorRoom",
+        "rule": {
+          "type": "address_part",
+          "part": "complement"
+        }
+      },
+      {
+        "source": "a1_cgc",
+        "target": "BPFiscalTaxIDCollection.TaxId0",
+        "rule": {
+          "type": "none",
+          "condition": {
+            "field": "a1_pessoa",
+            "operator": "equals",
+            "value": "J"
+          }
+        }
+      },
+      {
+        "source": "a1_hpage",
+        "target": "Website"
+      },
+      {
+        "source": "a1_inscr",
+        "target": "BPFiscalTaxIDCollection.TaxId1",
+        "rule": {
+          "type": "none",
+          "condition": {
+            "field": "a1_pessoa",
+            "operator": "equals",
+            "value": "J"
+          }
+        }
+      },
+      {
+        "source": "a1_cgc",
+        "target": "BPFiscalTaxIDCollection.TaxId4",
+        "rule": {
+          "type": "tax_id",
+          "condition": {
+            "field": "a1_pessoa",
+            "operator": "equals",
+            "value": "F"
+          }
+        }
+      },
+      {
+        "source": "a1_cnae",
+        "target": "BPFiscalTaxIDCollection.CNAECode",
+        "rule": {
+          "type": "lookup",
+          "lookupTable": "sap_cnaes",
+          "lookupKey": "code",
+          "lookupValue": "id"
+        }
+      },
+      {
+        "source": "a1_end",
+        "target": "BPAddresses.TypeOfAddress",
+        "rule": {
+          "type": "address_part",
+          "part": "type"
+        }
+      },
+      {
+        "source": "a1_cod_mun",
+        "target": "BPAddresses.County",
+        "rule": {
+          "type": "lookup",
+          "lookupTable": "ibge_municipios",
+          "lookupKey": "municipio",
+          "lookupValue": "nome_municipio"
+        }
+      },
+      {
+        "source": "a1_est",
+        "target": "BPAddresses.State"
+      }
+    ]
+  },
+  "SA2010": {
+    "sourceTable": "SA2010",
+    "targetObject": "BusinessPartners",
+    "fields": [
+      {
+        "source": "a2_nome",
+        "target": "CardName"
+      },
+      {
+        "source": "a2_tel",
+        "target": "Phone1"
+      },
+      {
+        "source": "a2_email",
+        "target": "EmailAddress"
+      },
+      {
+        "source": "a2_cgc",
+        "target": "FederalTaxID"
+      },
+      {
+        "source": "a2_end",
+        "target": "BPAddresses.Street",
+        "rule": {
+          "type": "address_part",
+          "part": "street"
+        }
+      },
+      {
+        "source": "a2_end",
+        "target": "BPAddresses.StreetNo",
+        "rule": {
+          "type": "address_part",
+          "part": "number"
+        }
+      },
+      {
+        "source": "a2_end",
+        "target": "BPAddresses.Block",
+        "rule": {
+          "type": "address_part",
+          "part": "complement"
+        }
+      },
+      {
+        "source": "a2_cep",
+        "target": "BPAddresses.ZipCode"
+      },
+      {
+        "source": "a2_est",
+        "target": "BPAddresses.State"
+      },
+      {
+        "source": "a2_codmun",
+        "target": "BPAddresses.County",
+        "rule": {
+          "type": "lookup",
+          "lookupTable": "ibge_municipios",
+          "lookupKey": "municipio",
+          "lookupValue": "nome_municipio"
+        }
+      },
+      {
+        "source": "a2_inscr",
+        "target": "BPFiscalTaxIDCollection.TaxId1"
+      },
+      {
+        "source": "a2_cnae",
+        "target": "BPFiscalTaxIDCollection.CNAECode",
+        "rule": {
+          "type": "lookup",
+          "lookupTable": "sap_cnaes",
+          "lookupKey": "code",
+          "lookupValue": "id"
+        }
+      },
+      {
+        "source": "a2_cgc",
+        "target": "BPFiscalTaxIDCollection.TaxId4",
+        "rule": {
+          "type": "tax_id",
+          "condition": {
+            "field": "a2_tipo",
+            "operator": "equals",
+            "value": "F"
+          }
+        }
+      },
+      {
+        "source": "a2_cgc",
+        "target": "BPFiscalTaxIDCollection.TaxId0",
+        "rule": {
+          "type": "tax_id",
+          "condition": {
+            "field": "a2_tipo",
+            "operator": "equals",
+            "value": "J"
+          }
+        }
+      },
+      {
+        "source": "a2_end",
+        "target": "BPAddresses.BuildingFloorRoom",
+        "rule": {
+          "type": "address_part",
+          "part": "complement"
+        }
+      },
+      {
+        "source": "a2_cod",
+        "target": "CardCode",
+        "rule": {
+          "type": "sap_sequence",
+          "objectType": "bp_supplier"
+        }
+      }
+    ]
+  },
+  "SE2010": {
+    "sourceTable": "SE2010",
+    "targetObject": "JournalEntries",
+    "fields": [
+      {
+        "source": "e2_hist",
+        "target": "Memo"
+      },
+      {
+        "source": "e2_emissao",
+        "target": "ReferenceDate",
+        "rule": {
+          "type": "date",
+          "format": "YYYYMMDD"
+        }
+      },
+      {
+        "source": "e2_emissao",
+        "target": "DueDate",
+        "rule": {
+          "type": "date",
+          "format": "YYYYMMDD"
+        }
+      },
+      {
+        "source": "e2_emissao",
+        "target": "TaxDate",
+        "rule": {
+          "type": "date",
+          "format": "YYYYMMDD"
+        }
+      },
+      {
+        "source": "",
+        "target": ""
+      }
+    ]
+  },
+  "SE1010": {
+    "sourceTable": "SE1010",
+    "targetObject": "Orders",
+    "fields": [
+      {
+        "source": "e1_cliente",
+        "target": "CardCode",
+        "rule": {
+          "type": "lookup",
+          "lookupTable": "sa1010",
+          "lookupKey": "a1_cod",
+          "lookupValue": "sap_code"
+        }
+      },
+      {
+        "source": "e1_vencrea",
+        "target": "DocDueDate"
+      },
+      {
+        "source": "e1_nomcli",
+        "target": "CardName"
+      },
+      {
+        "source": "e1_xtpsrv",
+        "target": "DocumentLines.ItemCode",
+        "rule": {
+          "type": "map",
+          "map": [
+            {
+              "from": "4",
+              "to": "001"
+            },
+            {
+              "from": "3",
+              "to": "002"
+            }
+          ]
+        }
+      },
+      {
+        "source": "",
+        "target": "DocumentLines.Quantity",
+        "rule": {
+          "type": "static",
+          "value": "1"
+        }
+      },
+      {
+        "source": "e1_valor",
+        "target": "DocumentLines.UnitPrice"
+      },
+      {
+        "source": "e1_valor",
+        "target": "DocumentLines.LineTotal"
+      },
+      {
+        "source": "e1_hist",
+        "target": "Comments"
+      },
+      {
+        "source": "e1_empfat",
+        "target": "BPL_IDAssignedToInvoice",
+        "rule": {
+          "type": "map",
+          "map": [
+            {
+              "from": "1",
+              "to": "1"
+            },
+            {
+              "from": "2",
+              "to": "5"
+            },
+            {
+              "from": "5",
+              "to": "3"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

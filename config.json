@@ -1,0 +1,21 @@
+{
+  "protheus": {
+    "server": "10.101.154.203",
+    "database": "ALFAOFICIAL",
+    "user": "sa",
+    "password": "_MPu3BAVd1-@@",
+    "port": 1433,
+    "driver": "msnodesqlv8"
+  },
+  "sap": {
+    "serviceLayerUrl": "https://sap-alfasap-sl.skyinone.net:50000/b1s/v1",
+    "companyDB": "SBO_ALFAERP_PRD",
+    "userName": "fabio",
+    "password": "Feel2025@!",
+    "language": "29"
+  },
+  "supabase": {
+    "url": "https://tdieqskomdgjjohywgzo.supabase.co",
+    "key": "sb_publishable_EmEl3u86l5qdmxxTseKIsQ_qaeRpovL"
+  }
+}

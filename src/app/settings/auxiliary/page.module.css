@@ -1,0 +1,146 @@
+.container {
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.header {
+    margin-bottom: 2rem;
+}
+
+.title {
+    font-size: 1.875rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    color: var(--foreground);
+}
+
+.subtitle {
+    color: var(--secondary);
+}
+
+.card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 2rem;
+}
+
+.dropzone {
+    border: 2px dashed var(--card-border);
+    border-radius: 8px;
+    padding: 3rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+.dropzone:hover,
+.dropzoneActive {
+    border-color: var(--primary);
+    background-color: rgba(59, 130, 246, 0.05);
+}
+
+.dropzoneIcon {
+    margin-bottom: 1rem;
+    color: var(--secondary);
+}
+
+.dropzoneText {
+    font-size: 1.125rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+}
+
+.dropzoneSubtext {
+    font-size: 0.875rem;
+    color: var(--secondary);
+}
+
+.previewTable {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1.5rem;
+    font-size: 0.875rem;
+}
+
+.previewTable th,
+.previewTable td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--card-border);
+}
+
+.previewTable th {
+    font-weight: 600;
+    color: var(--secondary);
+}
+
+.previewTable td {
+    color: var(--foreground);
+}
+
+.actions {
+    margin-top: 2rem;
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
+}
+
+.button {
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+    font-size: 0.875rem;
+}
+
+.buttonPrimary {
+    background-color: var(--primary);
+    color: white;
+}
+
+.buttonPrimary:hover {
+    background-color: var(--primary-hover);
+}
+
+.buttonSecondary {
+    background-color: var(--card-border);
+    color: var(--foreground);
+}
+
+.buttonSecondary:hover {
+    background-color: var(--secondary);
+}
+
+.metricCard {
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.metricValue {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--foreground);
+}
+
+.metricLabel {
+    font-size: 0.875rem;
+    color: var(--secondary);
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}

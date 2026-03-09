@@ -1,0 +1,650 @@
+.container {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    position: relative;
+    padding-bottom: 3rem;
+}
+
+/* ── Toast ── */
+.toast {
+    position: fixed;
+    top: 1.25rem;
+    right: 1.25rem;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    border-radius: 10px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    animation: slideIn 0.3s ease;
+    backdrop-filter: blur(8px);
+}
+
+.toast[data-type="success"] {
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #10b981;
+}
+
+.toast[data-type="error"] {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #ef4444;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(120%);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* ── Header ── */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.backLink {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--secondary);
+    text-decoration: none;
+    font-size: 0.85rem;
+    margin-bottom: 0.75rem;
+    transition: color 0.2s;
+}
+
+.backLink:hover {
+    color: var(--foreground);
+}
+
+.title {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--foreground);
+    margin: 0 0 0.35rem;
+}
+
+.badge {
+    background: rgba(59, 130, 246, 0.15);
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    color: var(--primary);
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 20px;
+    letter-spacing: 0.05em;
+    font-family: monospace;
+}
+
+.subtitle {
+    color: var(--secondary);
+    font-size: 0.9rem;
+    margin: 0;
+    max-width: 600px;
+    line-height: 1.5;
+}
+
+.actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+/* ── Stats ── */
+.stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+}
+
+.statCard {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.statValue {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--foreground);
+    line-height: 1;
+}
+
+.statLabel {
+    font-size: 0.78rem;
+    color: var(--secondary);
+    letter-spacing: 0.02em;
+}
+
+/* ── Progress ── */
+.progressCard {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.progressCard[data-phase="done"] {
+    border-color: rgba(16, 185, 129, 0.4);
+    background: rgba(16, 185, 129, 0.05);
+}
+
+.progressCard[data-phase="error"] {
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.05);
+}
+
+.progressCard[data-phase="importing"],
+.progressCard[data-phase="checking"] {
+    border-color: rgba(59, 130, 246, 0.4);
+    background: rgba(59, 130, 246, 0.05);
+}
+
+.progressHeader {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--foreground);
+}
+
+.closeProgress {
+    margin-left: auto;
+    background: transparent;
+    border: none;
+    color: var(--secondary);
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+}
+
+.progressBar {
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.progressFill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), #60a5fa);
+    border-radius: 3px;
+    transition: width 0.4s ease;
+}
+
+/* ── Grid ── */
+.gridWrapper {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid var(--card-border);
+    flex-wrap: wrap;
+}
+
+.searchForm {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--secondary);
+    flex: 1;
+    min-width: 260px;
+}
+
+.searchInput {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 0.45rem 0.75rem;
+    color: var(--foreground);
+    font-size: 0.875rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.searchInput:focus {
+    border-color: var(--primary);
+}
+
+.totalInfo {
+    font-size: 0.8rem;
+    color: var(--secondary);
+    white-space: nowrap;
+}
+
+/* ── Pagination ── */
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border-top: 1px solid var(--card-border);
+}
+
+.pageInfo {
+    font-size: 0.85rem;
+    color: var(--secondary);
+}
+
+/* ── Buttons ── */
+.btnPrimary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 1rem;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.btnPrimary:hover:not(:disabled) {
+    opacity: 0.85;
+}
+
+.btnPrimary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btnSecondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.875rem;
+    background: transparent;
+    color: var(--foreground);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+.btnSecondary:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--foreground);
+}
+
+.btnSecondary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btnDanger {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.875rem;
+    background: transparent;
+    color: var(--error);
+    border: 1px solid var(--error);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btnDanger:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.08);
+}
+
+.btnDanger:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btnSearch {
+    padding: 0.45rem 0.875rem;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.btnSearch:hover {
+    opacity: 0.85;
+}
+
+.btnClearSearch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.45rem 0.625rem;
+    background: transparent;
+    color: var(--secondary);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+
+.btnClearSearch:hover {
+    color: var(--foreground);
+}
+
+/* ── Modal ── */
+.modalOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+
+    to {
+        opacity: 1;
+    }
+}
+
+.modal {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    width: 500px;
+    max-width: 95vw;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    animation: slideUp 0.25s ease;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(20px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.modalHeader {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 1.5rem;
+    border-bottom: 1px solid var(--card-border);
+}
+
+.modalTitle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin: 0 0 0.3rem;
+    color: var(--foreground);
+}
+
+.modalSubtitle {
+    font-size: 0.85rem;
+    color: var(--secondary);
+    margin: 0;
+}
+
+.modalClose {
+    background: transparent;
+    border: none;
+    color: var(--secondary);
+    cursor: pointer;
+    padding: 0.25rem;
+    border-radius: 6px;
+    transition: color 0.2s;
+}
+
+.modalClose:hover {
+    color: var(--foreground);
+}
+
+.modalBody {
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.naturalInfo {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.infoItem {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    font-size: 0.875rem;
+}
+
+.infoLabel {
+    color: var(--secondary);
+    flex-shrink: 0;
+}
+
+.infoValue {
+    color: var(--foreground);
+    text-align: right;
+}
+
+.formGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+.formLabel {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--foreground);
+}
+
+.required {
+    color: var(--error);
+    margin-left: 2px;
+}
+
+.formInput {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 0.625rem 0.875rem;
+    color: var(--foreground);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.2s;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: monospace;
+}
+
+.formInput:focus {
+    border-color: var(--primary);
+}
+
+.formHint {
+    font-size: 0.78rem;
+    color: var(--secondary);
+    line-height: 1.4;
+}
+
+.modalFooter {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--card-border);
+}
+
+/* ── Animate ── */
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+
+/* ── Autocomplete de Conta SAP ── */
+.acWrapper {
+    position: relative;
+}
+
+.acInputRow {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.acInputInner {
+    padding-right: 2.25rem !important;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.acSpinner {
+    position: absolute;
+    right: 0.75rem;
+    color: var(--secondary);
+    display: flex;
+    align-items: center;
+    pointer-events: none;
+}
+
+.acDropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: #1a1f2e;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    border-radius: 10px;
+    list-style: none;
+    margin: 0;
+    padding: 0.3rem;
+    z-index: 3000;
+    max-height: 260px;
+    overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+    animation: slideIn 0.15s ease;
+}
+
+.acItem {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-size: 0.83rem;
+    min-height: 36px;
+}
+
+.acItem:hover {
+    background: rgba(59, 130, 246, 0.12);
+}
+
+.acCode {
+    font-family: monospace;
+    font-weight: 700;
+    font-size: 0.82rem;
+    color: var(--primary);
+    background: rgba(59, 130, 246, 0.12);
+    padding: 2px 7px;
+    border-radius: 5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.acName {
+    color: var(--foreground);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.acType {
+    font-size: 0.73rem;
+    color: var(--secondary);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--card-border);
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}

@@ -1,0 +1,1000 @@
+'use client';
+
+import { useState, useEffect, useRef } from 'react';
+import { Layers, ArrowRight, Settings, Plus, Save, Trash2, Edit, Play } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { useMapping } from '@/hooks/useMapping';
+import { useConfig } from '@/hooks/useConfig';
+import { FieldMapping, MappingRule, RuleType, ValueMap } from '@/types/mapping';
+import { TransformationUtils } from '@/utils/transformations';
+import { supabase } from '@/lib/supabase';
+
+const TABLE_OPTIONS = [
+    { code: 'SA1010', name: 'Clientes (BusinessPartners)' },
+    { code: 'SA2010', name: 'Fornecedores (BusinessPartners)' },
+    { code: 'SB1010', name: 'Produtos (Items)' },
+    { code: 'SE1010', name: 'Contas a Receber (Orders/A\u2019R Invoice)' },
+    { code: 'SE2010', name: 'Contas a Pagar (JournalEntries)' },
+];
+
+const SAP_OBJECTS: { [key: string]: string } = {
+    'SA1010': 'BusinessPartners',
+    'SA2010': 'BusinessPartners',
+    'SB1010': 'Items',
+    'SE1010': 'Orders',
+    'SE2010': 'JournalEntries'
+};
+
+const COMMON_SAP_FIELDS: { [key: string]: string[] } = {
+    'BusinessPartners': [
+        'CardCode', 'CardName', 'CardType', 'GroupCode', 'Phone1', 'Phone2', 'Cellular', 'EmailAddress', 'Website', 'Notes', 'FederalTaxID',
+        'BPAddresses.AddressName', 'BPAddresses.Street', 'BPAddresses.StreetNo', 'BPAddresses.Block', 'BPAddresses.ZipCode', 'BPAddresses.City',
+        'BPAddresses.County', 'BPAddresses.State', 'BPAddresses.Country', 'BPAddresses.AddressType', 'BPAddresses.AddrType', 'BPAddresses.TaxCode', 'BPAddresses.BuildingFloorRoom',
+        'BPFiscalTaxIDCollection.TaxId0', 'BPFiscalTaxIDCollection.TaxId1', 'BPFiscalTaxIDCollection.TaxId2', 'BPFiscalTaxIDCollection.TaxId3', 'BPFiscalTaxIDCollection.TaxId4',
+        'BPFiscalTaxIDCollection.CNAECode',
+        'U_TX_IE', 'U_TX_CNPJ', 'U_TX_INDFINAL', 'U_TX_INDIEDEST'
+    ],
+    'Items': ['ItemCode', 'ItemName', 'ItemsGroupCode', 'ForeignName', 'SalesUnit', 'PurchaseUnit', 'InventoryItem', 'SalesItem', 'PurchaseItem', 'QuantityOnStock'],
+    // Cabeçalho da Sales Order (SE1010 → SAP Orders)
+    'Orders': [
+        'CardCode', 'CardName', 'DocDate', 'DocDueDate', 'NumAtCard', 'Comments',
+        'DocCurrency', 'Series', 'BPL_IDAssignedToInvoice',
+        'DocumentLines.ItemCode', 'DocumentLines.Quantity', 'DocumentLines.UnitPrice',
+        'DocumentLines.TaxCode', 'DocumentLines.AccountCode', 'DocumentLines.CostingCode',
+        'DocumentLines.CostingCode2', 'DocumentLines.LineTotal',
+    ],
+    'JournalEntries': [
+        'ReferenceDate', 'DueDate', 'TaxDate', 'Reference', 'Reference2', 'TransactionCode',
+        'ProjectCode', 'Indicator', 'UseAutoStorno', 'StornDate',
+        'JournalEntryLines.AccountCode', 'JournalEntryLines.Debit', 'JournalEntryLines.Credit',
+        'JournalEntryLines.LineMemo', 'JournalEntryLines.CostingCode', 'JournalEntryLines.ProjectCode',
+    ],
+    // Legacy (mantido para compatibilidade)
+    'Invoices': ['DocEntry', 'DocNum', 'CardCode', 'CardName', 'DocDate', 'DocDueDate', 'DocTotal', 'Comments'],
+    'PurchaseInvoices': ['DocEntry', 'DocNum', 'CardCode', 'CardName', 'DocDate', 'DocDueDate', 'DocTotal', 'Comments']
+};
+
+export default function MappingPage() {
+    const { config: mappings, updateTableMapping, loading: mappingLoading } = useMapping();
+    const [selectedTable, setSelectedTable] = useState<string>('SA1010');
+    const [sourceColumns, setSourceColumns] = useState<string[]>([]);
+
+    // Preview State
+    const [showPreview, setShowPreview] = useState(false);
+    const [previewData, setPreviewData] = useState<{ source: any, target: any } | null>(null);
+
+    // Modal State
+    const [showRuleModal, setShowRuleModal] = useState(false);
+    const [currentField, setCurrentField] = useState<FieldMapping | null>(null);
+    const [ruleType, setRuleType] = useState<RuleType>('none');
+    const [ruleValue, setRuleValue] = useState('');
+    const [mapValues, setMapValues] = useState<ValueMap[]>([]);
+    const [addressPart, setAddressPart] = useState<'street' | 'number' | 'complement' | 'type'>('street');
+    const [condField, setCondField] = useState('');
+    const [condValue, setCondValue] = useState('');
+
+    // Lookup State
+    const [lookupTable, setLookupTable] = useState('');
+    const [lookupKey, setLookupKey] = useState('');
+    const [lookupValue, setLookupValue] = useState('');
+
+    // SAP Sequence State
+    const [seriesCode, setSeriesCode] = useState<number | ''>('');
+    const [objectType, setObjectType] = useState('');
+
+    const [editingIndex, setEditingIndex] = useState<number>(-1);
+
+    // Lookup Composite state
+    const [lookupFallback, setLookupFallback] = useState('');
+    // For lookup_composite: source fields (two inputs) and lookup key fields (two inputs)
+    const [ckSourceFields, setCkSourceFields] = useState<string[]>(['', '']);
+    const [ckLookupKeyFields, setCkLookupKeyFields] = useState<string[]>(['', '']);
+
+    // Colunas conhecidas por tabela (fallback imediato, antes do fetch)
+    const KNOWN_COLS: Record<string, string[]> = {
+        sa1010: ['a1_filial', 'a1_cod', 'a1_loja', 'a1_nome', 'a1_nreduz', 'a1_cgc', 'a1_tipo', 'a1_est', 'a1_mun', 'a1_tel', 'a1_email', 'a1_end', 'sap_code'],
+        sa2010: ['a2_filial', 'a2_cod', 'a2_loja', 'a2_nome', 'a2_nreduz', 'a2_cgc', 'a2_tipo', 'a2_est', 'a2_mun', 'a2_tel', 'a2_email', 'a2_end', 'sap_code'],
+        sb1010: ['b1_filial', 'b1_cod', 'b1_desc', 'b1_tipo', 'b1_um', 'b1_grupo', 'b1_localiz', 'sap_code'],
+        sed010: ['ed_filial', 'ed_codigo', 'ed_descri', 'ed_naturez', 'sap_account_code', 'sap_account_name'],
+        sap_items: ['item_code', 'item_name', 'item_type', 'svc_code', 'u_svc_code', 'purchase', 'sales', 'imported_at'],
+        sap_chart_of_accounts: ['code', 'name', 'account_type', 'external_code', 'currency', 'father_account', 'balance'],
+        sap_cost_centers: ['code', 'name'],
+        sap_business_places: ['bpl_id', 'bpl_name', 'federal_tax_id', 'city', 'state', 'country', 'zip_code'],
+        ibge_municipios: ['codigo_ibge', 'nome_municipio', 'uf', 'nome_uf', 'municipio', 'codigo_municipio_completo'],
+        sap_cnaes: ['id', 'code', 'description'],
+    };
+
+    // Colunas da tabela de lookup (carregadas dinamicamente)
+    const [lookupTableCols, setLookupTableCols] = useState<string[]>([]);
+    const [lookupTableColsLoading, setLookupTableColsLoading] = useState(false);
+
+    // Busca dinâmica das colunas — aplica fallback imediato e enriquece via API
+    const fetchLookupCols = async (table: string) => {
+        if (!table) { setLookupTableCols([]); return; }
+        // Aplica imediatamente as colunas conhecidas
+        const known = KNOWN_COLS[table] ?? [];
+        if (known.length > 0) setLookupTableCols(known);
+        // Tenta enriquecer via API (pode conter colunas extras reais)
+        setLookupTableColsLoading(true);
+        try {
+            const res = await fetch(`/api/data?table=${table}&limit=1`);
+            const json = await res.json();
+            if (json.success && json.data && json.data.length > 0) {
+                const dynamic = Object.keys(json.data[0]);
+                // Merge: mantém conhecidos + adiciona qualquer extra real
+                const merged = Array.from(new Set([...known, ...dynamic])).sort();
+                setLookupTableCols(merged);
+            }
+            // Se tabela vazia mas há colunas conhecidas, mantém as conhecidas
+        } catch {
+            // mantém as colunas conhecidas já aplicadas
+        } finally {
+            setLookupTableColsLoading(false);
+        }
+    };
+
+    // Fetch Source Cols on Table Select
+    useEffect(() => {
+        const fetchCols = async () => {
+            if (!selectedTable) return;
+            try {
+                const res = await fetch(`/api/data?table=${selectedTable}&limit=1`);
+                const json = await res.json();
+                if (json.success && json.data && json.data.length > 0) {
+                    setSourceColumns(Object.keys(json.data[0]));
+                } else if (json.data && json.data.length === 0) {
+                    setSourceColumns(['(Tabela vazia ou sem estrutura)']);
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        };
+        fetchCols();
+    }, [selectedTable]);
+
+
+
+    const handleAddField = () => {
+        const currentMapping = mappings[selectedTable] || { sourceTable: selectedTable, targetObject: SAP_OBJECTS[selectedTable], fields: [] };
+        const newField: FieldMapping = { source: '', target: '' };
+        updateTableMapping(selectedTable, { ...currentMapping, fields: [...currentMapping.fields, newField] });
+    };
+
+    const handleRemoveField = (index: number) => {
+        const currentMapping = mappings[selectedTable];
+        if (!currentMapping) return;
+        const newFields = [...currentMapping.fields];
+        newFields.splice(index, 1);
+        updateTableMapping(selectedTable, { ...currentMapping, fields: newFields });
+    };
+
+    const handleChangeField = (index: number, key: 'source' | 'target', value: string) => {
+        const currentMapping = mappings[selectedTable];
+        if (!currentMapping) return;
+        const newFields = [...currentMapping.fields];
+        newFields[index] = { ...newFields[index], [key]: value };
+        updateTableMapping(selectedTable, { ...currentMapping, fields: newFields });
+    };
+
+    const openRuleModal = (field: FieldMapping, index: number) => {
+        setCurrentField({ ...field });
+        setRuleType(field.rule?.type || 'none');
+        setRuleValue(field.rule?.value || '');
+        setMapValues(field.rule?.map || []);
+        setCondField(field.rule?.condition?.field || '');
+        setCondValue(field.rule?.condition?.value || '');
+
+        setLookupTable(field.rule?.lookupTable || '');
+        setLookupKey(field.rule?.lookupKey || '');
+        setLookupValue(field.rule?.lookupValue || '');
+        setLookupFallback(field.rule?.lookupFallback || '');
+        // Carrega as colunas da tabela de lookup ao abrir o modal
+        if (field.rule?.lookupTable) fetchLookupCols(field.rule.lookupTable);
+        else setLookupTableCols([]);
+
+        // Composite key
+        const ck = field.rule?.compositeKey;
+        setCkSourceFields(ck?.sourceFields || ['', '']);
+        setCkLookupKeyFields(ck?.lookupKeyFields || ['', '']);
+
+        setSeriesCode(field.rule?.seriesCode ?? '');
+        setObjectType(field.rule?.objectType || '');
+
+        // @ts-ignore
+        setAddressPart(field.rule?.part || 'street');
+        setShowRuleModal(true);
+        setEditingIndex(index);
+    };
+
+    const saveRule = () => {
+        if (editingIndex === -1 || !selectedTable) return;
+
+        const currentMapping = mappings[selectedTable];
+        const newFields = [...currentMapping.fields];
+
+        const rule: MappingRule = { type: ruleType };
+        if (ruleType === 'prefix' || ruleType === 'suffix') {
+            rule.value = ruleValue;
+        } else if (ruleType === 'static') {
+            rule.value = ruleValue;
+        } else if (ruleType === 'map') {
+            rule.map = mapValues;
+        } else if (ruleType === 'address_part') {
+            rule.part = addressPart;
+        } else if (ruleType === 'lookup') {
+            rule.lookupTable = lookupTable;
+            rule.lookupKey = lookupKey;
+            rule.lookupValue = lookupValue;
+            if (lookupFallback) rule.lookupFallback = lookupFallback;
+        } else if (ruleType === 'lookup_composite') {
+            rule.lookupTable = lookupTable;
+            rule.lookupValue = lookupValue;
+            rule.compositeKey = {
+                sourceFields: ckSourceFields.filter(Boolean),
+                lookupKeyFields: ckLookupKeyFields.filter(Boolean),
+            };
+            if (lookupFallback) rule.lookupFallback = lookupFallback;
+        } else if (ruleType === 'sap_sequence') {
+            rule.objectType = objectType;
+            if (seriesCode !== '') rule.seriesCode = Number(seriesCode);
+        }
+
+        if (condField && condValue) {
+            rule.condition = { field: condField, operator: 'equals', value: condValue };
+        }
+
+        // Para regra 'static', source não é necessário — limpa para evitar confusão
+        const updatedField = { ...newFields[editingIndex], rule };
+        if (ruleType === 'static') updatedField.source = '';
+        newFields[editingIndex] = updatedField;
+        updateTableMapping(selectedTable, { ...currentMapping, fields: newFields });
+        setShowRuleModal(false);
+    };
+
+    const addMapValue = () => {
+        setMapValues([...mapValues, { from: '', to: '' }]);
+    };
+
+    const removeMapValue = (idx: number) => {
+        const newMap = [...mapValues];
+        newMap.splice(idx, 1);
+        setMapValues(newMap);
+    };
+
+    const updateMapValue = (idx: number, key: keyof ValueMap, val: string) => {
+        const newMap = [...mapValues];
+        newMap[idx] = { ...newMap[idx], [key]: val };
+        setMapValues(newMap);
+    };
+
+    const handlePreview = async () => {
+        const currentMapping = mappings[selectedTable];
+        if (!currentMapping || currentMapping.fields.length === 0) {
+            alert('Configure o mapeamento antes de visualizar.');
+            return;
+        }
+
+        try {
+            // Fetch one record
+            const res = await fetch(`/api/data?table=${selectedTable}&limit=1`);
+            const json = await res.json();
+
+            if (!json.success || !json.data || json.data.length === 0) {
+                alert('Não foi possível obter dados de exemplo.');
+                return;
+            }
+
+            const sourceRecord = json.data[0];
+            const targetRecord: any = {};
+
+            // Apply logical transformation
+            currentMapping.fields.forEach(field => {
+                if (!field.target) return;
+
+                // Para tipo 'static', source não é necessário
+                const isStaticRule = field.rule?.type === 'static';
+                if (!isStaticRule && !field.source) return;
+
+                const originalValue = field.source ? sourceRecord[field.source] : undefined;
+
+                // Pula campos sem valor de origem APENAS para regras não-static
+                if (!isStaticRule && (originalValue === undefined || originalValue === null)) return;
+
+                let finalValue: any = typeof originalValue === 'string' ? originalValue.trim() : originalValue;
+
+                // Check condition if exists
+                if (field.rule?.condition) {
+                    const cond = field.rule.condition;
+                    const recordVal = sourceRecord[cond.field];
+                    if (cond.operator === 'equals' && String(recordVal) !== String(cond.value)) return;
+                    if (cond.operator === 'not_equals' && String(recordVal) === String(cond.value)) return;
+                }
+
+                if (field.rule) {
+                    switch (field.rule.type) {
+                        case 'static': {
+                            // Auto-coerção: '1' → 1, 'true'/'false' → boolean, resto → string
+                            const raw = field.rule.value ?? null;
+                            if (raw === null || raw === '') {
+                                finalValue = raw;
+                            } else if (raw === 'true') {
+                                finalValue = true;
+                            } else if (raw === 'false') {
+                                finalValue = false;
+                            } else if (!isNaN(Number(raw)) && raw.trim() !== '') {
+                                finalValue = Number(raw);
+                            } else {
+                                finalValue = raw;
+                            }
+                            break;
+                        }
+                        case 'prefix':
+                            finalValue = (field.rule.value || '') + originalValue;
+                            break;
+                        case 'suffix':
+                            finalValue = originalValue + (field.rule.value || '');
+                            break;
+                        case 'map': {
+                            const mapEntry = field.rule.map?.find(m => m.from == originalValue);
+                            if (mapEntry) finalValue = mapEntry.to;
+                            break;
+                        }
+                        case 'address_part': {
+                            const parts = TransformationUtils.parseAddress(originalValue);
+                            if (field.rule.part && parts[field.rule.part]) {
+                                finalValue = parts[field.rule.part];
+                            }
+                            break;
+                        }
+                        case 'tax_id':
+                            finalValue = TransformationUtils.formatTaxId(originalValue);
+                            break;
+                        case 'lookup':
+                            // Will be handled asynchronously below
+                            break;
+                    }
+                }
+
+                if (finalValue === null || finalValue === undefined) return;
+                targetRecord[field.target] = finalValue;
+            });
+
+            // Perform Lookups for Preview
+            for (const field of currentMapping.fields) {
+                if (field.rule?.type === 'lookup' && field.rule.lookupTable && field.rule.lookupKey && field.rule.lookupValue && sourceRecord[field.source]) {
+                    const valToLookup = sourceRecord[field.source];
+                    try {
+                        const { data, error } = await supabase
+                            .from(field.rule.lookupTable)
+                            .select(field.rule.lookupValue)
+                            .eq(field.rule.lookupKey, valToLookup)
+                            .maybeSingle();
+
+                        if (!error && data) {
+                            targetRecord[field.target] = data[field.rule.lookupValue as keyof typeof data];
+                        } else {
+                            targetRecord[field.target] = `(Lookup Falhou: ${valToLookup})`;
+                        }
+                    } catch (e) {
+                        targetRecord[field.target] = '(Erro Lookup)';
+                    }
+                }
+            }
+
+            setPreviewData({ source: sourceRecord, target: targetRecord });
+            setShowPreview(true);
+
+        } catch (error) {
+            console.error(error);
+            alert('Erro ao gerar preview.');
+        }
+    };
+
+    const currentMapping = mappings[selectedTable] || { sourceTable: selectedTable, targetObject: SAP_OBJECTS[selectedTable], fields: [] };
+
+    return (
+        <div className="container" style={{ paddingBottom: '4rem' }}>
+            <h1 className="page-title">Mapeamento de Campos (De/Para)</h1>
+            <p style={{ color: 'var(--secondary)', marginBottom: '2rem' }}>
+                Defina como os campos do Protheus (Supabase) serão traduzidos para o SAP Business One.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: '2rem' }}>
+
+                {/* SIDEBAR: Table Selection */}
+                <div className="card" style={{ height: 'fit-content' }}>
+                    <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>Tabelas</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        {TABLE_OPTIONS.map(opt => (
+                            <button
+                                key={opt.code}
+                                onClick={() => setSelectedTable(opt.code)}
+                                style={{
+                                    textAlign: 'left',
+                                    padding: '0.75rem',
+                                    borderRadius: '6px',
+                                    backgroundColor: selectedTable === opt.code ? 'var(--primary)' : 'transparent',
+                                    color: selectedTable === opt.code ? 'white' : 'var(--foreground)',
+                                    fontWeight: selectedTable === opt.code ? 600 : 400,
+                                    transition: 'all 0.2s'
+                                }}
+                            >
+                                {opt.code} <br />
+                                <span style={{ fontSize: '0.8rem', opacity: 0.8 }}>{opt.name.split(' ')[0]}</span>
+                            </button>
+                        ))}
+                    </div>
+
+
+                </div>
+
+                {/* MAIN: Mapping Area */}
+                <div className="card">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                        <div>
+                            <h2 style={{ fontSize: '1.25rem' }}>{selectedTable} <ArrowRight size={16} style={{ margin: '0 0.5rem' }} /> {SAP_OBJECTS[selectedTable]}</h2>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <button className="btn btn-secondary" onClick={handlePreview}>
+                                <Play size={16} style={{ marginRight: '0.5rem' }} /> Testar Preview
+                            </button>
+                            <button className="btn btn-primary" onClick={handleAddField}>
+                                <Plus size={16} style={{ marginRight: '0.5rem' }} /> Adicionar Campo
+                            </button>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '600px', overflowY: 'auto', paddingRight: '0.5rem' }}>
+                        {currentMapping.fields.length === 0 ? (
+                            <p style={{ color: 'var(--secondary)', textAlign: 'center', padding: '2rem' }}>
+                                Nenhum campo mapeado. Adicione um novo mapeamento para começar.
+                            </p>
+                        ) : (
+                            currentMapping.fields.map((field, idx) => (
+                                <div key={idx} style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: '1fr 30px 1fr 120px 40px',
+                                    gap: '1rem',
+                                    alignItems: 'center',
+                                    padding: '1rem',
+                                    backgroundColor: 'var(--background)',
+                                    borderRadius: '8px',
+                                    border: '1px solid var(--card-border)'
+                                }}>
+                                    {/* Source Field */}
+                                    <div>
+                                        <label className="label" style={{ marginBottom: '0.25rem' }}>Origem (Protheus)</label>
+                                        {field.rule?.type === 'static' ? (
+                                            <div style={{
+                                                padding: '0.5rem 0.75rem',
+                                                backgroundColor: 'rgba(var(--primary-rgb, 99,102,241),0.12)',
+                                                border: '1px dashed var(--primary)',
+                                                borderRadius: '8px',
+                                                fontSize: '0.82rem',
+                                                color: 'var(--primary)',
+                                                fontStyle: 'italic',
+                                            }}>
+                                                📌 Valor Fixo: <strong>{field.rule.value ?? '(vazio)'}</strong>
+                                            </div>
+                                        ) : (
+                                            <AutocompleteInput
+                                                value={field.source}
+                                                onChange={(val: string) => handleChangeField(idx, 'source', val)}
+                                                options={sourceColumns}
+                                                placeholder="Origem..."
+                                            />
+                                        )}
+                                    </div>
+
+                                    <div style={{ display: 'flex', justifyContent: 'center', paddingTop: '1.5rem' }}>
+                                        <ArrowRight size={16} color="var(--secondary)" />
+                                    </div>
+
+                                    {/* Target Field */}
+                                    <div>
+                                        <label className="label" style={{ marginBottom: '0.25rem' }}>Destino (SAP)</label>
+                                        <AutocompleteInput
+                                            value={field.target}
+                                            onChange={(val: string) => handleChangeField(idx, 'target', val)}
+                                            options={(COMMON_SAP_FIELDS[SAP_OBJECTS[selectedTable]] || []).filter(opt =>
+                                                // Exclude targets used in OTHER rows (allow current row's value)
+                                                !currentMapping.fields.some((f, i) => i !== idx && f.target === opt)
+                                            )}
+                                            placeholder="Destino..."
+                                        />
+                                    </div>
+
+                                    {/* Rule Button */}
+                                    <div style={{ paddingTop: '1.5rem' }}>
+                                        <button
+                                            className="btn btn-secondary"
+                                            style={{ width: '100%', fontSize: '0.8rem', padding: '0.5rem', backgroundColor: field.rule?.type !== 'none' ? 'var(--primary)' : undefined, color: field.rule?.type !== 'none' ? 'white' : undefined }}
+                                            onClick={() => openRuleModal(field, idx)}
+                                        >
+                                            <Settings size={14} style={{ marginRight: '4px' }} />
+                                            {field.rule && field.rule.type !== 'none' ? field.rule.type : 'Regra'}
+                                        </button>
+                                    </div>
+
+                                    {/* Delete Button */}
+                                    <div style={{ paddingTop: '1.5rem', display: 'flex', justifyContent: 'center' }}>
+                                        <button onClick={() => handleRemoveField(idx)} style={{ color: 'var(--error)' }}>
+                                            <Trash2 size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* PREVIEW MODAL */}
+            {showPreview && previewData && (
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1100 }}>
+                    <div className="card" style={{ width: '900px', height: '80vh', display: 'flex', flexDirection: 'column' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--card-border)', paddingBottom: '1rem' }}>
+                            <h2 style={{ fontSize: '1.5rem' }}>Preview da Migração</h2>
+                            <button onClick={() => setShowPreview(false)} style={{ color: 'var(--secondary)' }}><Trash2 size={24} style={{ transform: 'rotate(45deg)' }} /></button>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', flex: 1, overflow: 'hidden' }}>
+                            {/* Source */}
+                            <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                <h3 style={{ marginBottom: '1rem', color: 'var(--accent)' }}>Origem (Protheus/Supabase)</h3>
+                                <div style={{ flex: 1, overflow: 'auto', backgroundColor: '#000', padding: '1rem', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.9rem' }}>
+                                    <pre>{JSON.stringify(previewData.source, null, 2)}</pre>
+                                </div>
+                            </div>
+
+                            {/* Target */}
+                            <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                <h3 style={{ marginBottom: '1rem', color: 'var(--success)' }}>Destino (Objeto SAP)</h3>
+                                <div style={{ flex: 1, overflow: 'auto', backgroundColor: '#000', padding: '1rem', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.9rem' }}>
+                                    <pre>{JSON.stringify(previewData.target, null, 2)}</pre>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style={{ marginTop: '1rem', textAlign: 'right' }}>
+                            <button className="btn btn-secondary" onClick={() => setShowPreview(false)}>Fechar Preview</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* RULE MODAL */}
+            {showRuleModal && (
+                <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+                    <div className="card" style={{ width: '500px', maxHeight: '90vh', overflowY: 'auto' }}>
+                        <h2 style={{ marginBottom: '1.5rem' }}>Configurar Regra de Transformação</h2>
+
+                        <div className="input-group">
+                            <label className="label">Tipo de Regra</label>
+                            <select className="input" value={ruleType} onChange={(e) => setRuleType(e.target.value as RuleType)}>
+                                <option value="none">Nenhuma (Cópia Direta)</option>
+                                <option value="static">Valor Fixo (static — literal)</option>
+                                <option value="prefix">Adicionar Prefixo</option>
+                                <option value="suffix">Adicionar Sufixo</option>
+                                <option value="map">Mapeamento de Valores (De/Para)</option>
+                                <option value="date">Converter Data YYYYMMDD → ISO</option>
+                                <option value="address_part">Análise de Endereço (Extração)</option>
+                                <option value="tax_id">Análise de CGC (Formatação)</option>
+                                <optgroup label="Lookup (busca em outra tabela)">
+                                    <option value="lookup">Lookup simples (chave única)</option>
+                                    <option value="lookup_composite">Lookup composto (múltiplas chaves — ex: cod+loja)</option>
+                                </optgroup>
+                                <option value="sap_sequence">Utilizar Regra de Sequência do SAP</option>
+                            </select>
+                        </div>
+
+                        {(ruleType === 'prefix' || ruleType === 'suffix') && (
+                            <div className="input-group">
+                                <label className="label">Valor do {ruleType === 'prefix' ? 'Prefixo' : 'Sufixo'}</label>
+                                <input className="input" value={ruleValue} onChange={e => setRuleValue(e.target.value)} placeholder={`Ex: ${ruleType === 'prefix' ? 'CLI-' : '-BR'}`} />
+                            </div>
+                        )}
+
+                        {ruleType === 'static' && (
+                            <div className="input-group">
+                                <label className="label">Valor Fixo</label>
+                                <input
+                                    className="input"
+                                    value={ruleValue}
+                                    onChange={e => setRuleValue(e.target.value)}
+                                    placeholder="Ex: 100, tYES, BR, 1, Ativo..."
+                                />
+                                <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
+                                    Este valor será enviado <strong>literalmente</strong> para o campo SAP, independente do valor de origem.
+                                </p>
+                            </div>
+                        )}
+
+                        {ruleType === 'map' && (
+                            <div className="input-group">
+                                <label className="label">Valores (Origem -&gt; Destino)</label>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '200px', overflowY: 'auto', padding: '0.5rem', border: '1px solid var(--card-border)', borderRadius: '8px' }}>
+                                    {mapValues.map((v, i) => (
+                                        <div key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                            <input className="input" value={v.from} onChange={e => updateMapValue(i, 'from', e.target.value)} placeholder="De" style={{ flex: 1 }} />
+                                            <ArrowRight size={14} color="var(--secondary)" />
+                                            <input className="input" value={v.to} onChange={e => updateMapValue(i, 'to', e.target.value)} placeholder="Para" style={{ flex: 1 }} />
+                                            <button onClick={() => removeMapValue(i)} style={{ color: 'var(--error)' }}><Trash2 size={16} /></button>
+                                        </div>
+                                    ))}
+                                    <button className="btn btn-secondary" onClick={addMapValue} style={{ marginTop: '0.5rem', fontSize: '0.8rem' }}>
+                                        <Plus size={14} style={{ marginRight: '4px' }} /> Adicionar Valor
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {ruleType === 'address_part' && (
+                            <div className="input-group">
+                                <label className="label">Parte do Endereço</label>
+                                <select
+                                    className="input"
+                                    // @ts-ignore
+                                    value={addressPart}
+                                    onChange={e => setAddressPart(e.target.value as any)}
+                                >
+                                    <option value="street">Nome da Rua / Logradouro</option>
+                                    <option value="number">Número</option>
+                                    <option value="complement">Complemento</option>
+                                    <option value="type">Tipo (Rua, Av, etc)</option>
+                                </select>
+                                <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
+                                    Extrai automaticamente esta parte do campo de origem.
+                                </p>
+                            </div>
+                        )}
+
+                        {ruleType === 'tax_id' && (
+                            <div className="input-group">
+                                <p style={{ color: 'var(--foreground)' }}>
+                                    O CGC será formatado para remover pontuação (apenas dígitos) conforme padrão CRD7.
+                                </p>
+                            </div>
+                        )}
+
+                        {(ruleType === 'lookup' || ruleType === 'lookup_composite') && (
+                            <div className="input-group">
+                                <label className="label">
+                                    {ruleType === 'lookup_composite'
+                                        ? '🔗 Lookup Composto (múltiplas chaves)'
+                                        : '🔗 Lookup Simples'}
+                                </label>
+                                <div style={{ display: 'grid', gap: '0.8rem', padding: '1rem', border: '1px solid var(--card-border)', borderRadius: 8 }}>
+
+                                    {/* Tabela de lookup */}
+                                    <div>
+                                        <label className="label" style={{ fontSize: '0.82rem' }}>Tabela Auxiliar (Supabase)</label>
+                                        <select className="input" value={lookupTable} onChange={e => {
+                                            const t = e.target.value;
+                                            setLookupTable(t);
+                                            setLookupKey('');
+                                            setLookupValue('');
+                                            setCkLookupKeyFields(['', '']);
+                                            fetchLookupCols(t);
+                                        }}>
+                                            <option value="">Selecione...</option>
+                                            <optgroup label="Protheus (replicados no Supabase)">
+                                                <option value="sa1010">sa1010 — Clientes (código SAP via sap_code)</option>
+                                                <option value="sa2010">sa2010 — Fornecedores (código SAP via sap_code)</option>
+                                                <option value="sb1010">sb1010 — Produtos/Itens (código SAP via sap_code)</option>
+                                                <option value="sed010">sed010 — Naturezas (conta SAP via sap_account_code)</option>
+                                            </optgroup>
+                                            <optgroup label="SAP importado para Supabase">
+                                                <option value="sap_items">sap_items — Itens SAP (E1_XTPSRV → svc_code → item_code)</option>
+                                                <option value="sap_chart_of_accounts">sap_chart_of_accounts — Plano de Contas</option>
+                                                <option value="sap_cost_centers">sap_cost_centers — Centros de Custo</option>
+                                            </optgroup>
+                                            <optgroup label="Tabelas Auxiliares">
+                                                <option value="ibge_municipios">ibge_municipios — Mun. IBGE</option>
+                                                <option value="sap_cnaes">sap_cnaes — CNAEs SAP</option>
+                                            </optgroup>
+                                        </select>
+                                        {lookupTableColsLoading && (
+                                            <p style={{ fontSize: '0.75rem', color: 'var(--accent)', marginTop: 4 }}>
+                                                ⟳ Carregando campos da tabela...
+                                            </p>
+                                        )}
+                                        {!lookupTableColsLoading && lookupTable && lookupTableCols.length > 0 && (
+                                            <p style={{ fontSize: '0.72rem', color: 'var(--secondary)', marginTop: 4 }}>
+                                                {lookupTableCols.length} campos disponíveis
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    {/* Helper: Sempre um <select> com as colunas disponíveis */}
+                                    {(() => {
+                                        const ColSelect = ({
+                                            value, onChange, placeholder, allowFreeText = false
+                                        }: {
+                                            value: string;
+                                            onChange: (v: string) => void;
+                                            placeholder?: string;
+                                            allowFreeText?: boolean;
+                                        }) => {
+                                            const isCustom = value && !lookupTableCols.includes(value);
+                                            return (
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                    <select
+                                                        className="input"
+                                                        value={isCustom ? '__custom__' : value}
+                                                        onChange={e => {
+                                                            if (e.target.value === '__custom__') return;
+                                                            onChange(e.target.value);
+                                                        }}
+                                                    >
+                                                        <option value="">
+                                                            {lookupTableColsLoading ? '⟳ Carregando...' : (placeholder || '— Selecione o campo —')}
+                                                        </option>
+                                                        {lookupTableCols.map(c => (
+                                                            <option key={c} value={c}>{c}</option>
+                                                        ))}
+                                                        {lookupTableCols.length === 0 && !lookupTableColsLoading && (
+                                                            <option disabled value="">Selecione uma tabela primeiro</option>
+                                                        )}
+                                                        {allowFreeText && (
+                                                            <option value="__custom__">✎ Digitar manualmente...</option>
+                                                        )}
+                                                    </select>
+                                                    {/* Input livre visível se campo digitado não está na lista */}
+                                                    {(isCustom || (allowFreeText && value === '__custom__')) && (
+                                                        <input
+                                                            className="input"
+                                                            value={isCustom ? value : ''}
+                                                            onChange={e => onChange(e.target.value)}
+                                                            placeholder="Digite o nome do campo..."
+                                                            style={{ fontSize: '0.85rem' }}
+                                                        />
+                                                    )}
+                                                </div>
+                                            );
+                                        };
+
+                                        return (
+                                            <>
+                                                {/* Chave simples */}
+                                                {ruleType === 'lookup' && (
+                                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                                                        <div>
+                                                            <label className="label" style={{ fontSize: '0.82rem' }}>
+                                                                Campo Chave na Tabela {lookupTableColsLoading && '(carregando...)'}
+                                                            </label>
+                                                            <ColSelect value={lookupKey} onChange={setLookupKey} placeholder="Campo para comparar..." />
+                                                        </div>
+                                                        <div>
+                                                            <label className="label" style={{ fontSize: '0.82rem' }}>Retornar Campo</label>
+                                                            <ColSelect value={lookupValue} onChange={setLookupValue} placeholder="Campo para retornar..." />
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {/* Chave composta */}
+                                                {ruleType === 'lookup_composite' && (
+                                                    <>
+                                                        <p style={{ fontSize: '0.78rem', color: 'var(--secondary)' }}>
+                                                            ⚠️ Use quando a chave for a combinação de 2 campos. Ex: e1_cliente+e1_loja → sa1010.(a1_cod+a1_loja) → sap_code
+                                                        </p>
+                                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                                                            <div>
+                                                                <label className="label" style={{ fontSize: '0.82rem' }}>Campos Origem (tabela fonte)</label>
+                                                                <select className="input" style={{ marginBottom: 4 }}
+                                                                    value={ckSourceFields[0]} onChange={e => setCkSourceFields([e.target.value, ckSourceFields[1]])}>
+                                                                    <option value="">1º campo — ex: e1_cliente</option>
+                                                                    {sourceColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                                                                </select>
+                                                                <select className="input"
+                                                                    value={ckSourceFields[1]} onChange={e => setCkSourceFields([ckSourceFields[0], e.target.value])}>
+                                                                    <option value="">2º campo — ex: e1_loja</option>
+                                                                    {sourceColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                                                                </select>
+                                                            </div>
+                                                            <div>
+                                                                <label className="label" style={{ fontSize: '0.82rem' }}>
+                                                                    Campos na Tabela Lookup {lookupTableColsLoading && '(carregando...)'}
+                                                                </label>
+                                                                <ColSelect value={ckLookupKeyFields[0]}
+                                                                    onChange={v => setCkLookupKeyFields([v, ckLookupKeyFields[1]])}
+                                                                    placeholder="1º campo — ex: a1_cod" />
+                                                                <div style={{ marginTop: 4 }}>
+                                                                    <ColSelect value={ckLookupKeyFields[1]}
+                                                                        onChange={v => setCkLookupKeyFields([ckLookupKeyFields[0], v])}
+                                                                        placeholder="2º campo — ex: a1_loja" />
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div>
+                                                            <label className="label" style={{ fontSize: '0.82rem' }}>Retornar Campo</label>
+                                                            <ColSelect value={lookupValue} onChange={setLookupValue} placeholder="Ex: sap_code" />
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </>
+                                        );
+                                    })()}
+
+                                    {/* Fallback */}
+                                    <div>
+                                        <label className="label" style={{ fontSize: '0.82rem' }}>Valor Padrão (se não encontrar)</label>
+                                        <input className="input" value={lookupFallback} onChange={e => setLookupFallback(e.target.value)}
+                                            placeholder="Ex: CLIENTE_NAO_ENCONTRADO (ou deixe vazio para null)" />
+                                    </div>
+
+                                    <p style={{ fontSize: '0.78rem', color: 'var(--secondary)' }}>
+                                        Busca o valor de origem na tabela auxiliar e retorna o campo configurado (ex: sap_code do cliente).
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
+                        {ruleType === 'sap_sequence' && (
+                            <div className="input-group">
+                                <label className="label">Configuração de Sequência SAP (Série)</label>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1rem', padding: '1rem', border: '1px solid var(--card-border)', borderRadius: '8px' }}>
+
+                                    <div>
+                                        <label className="label" style={{ fontSize: '0.85rem' }}>Tipo de Objeto SAP</label>
+                                        <select
+                                            className="input"
+                                            value={objectType}
+                                            onChange={e => setObjectType(e.target.value)}
+                                        >
+                                            <option value="">Selecione o Objeto...</option>
+                                            <optgroup label="Parceiros de Negócios (auto C##### / F#####)">
+                                                <option value="bp_customer">BP - Cliente → próximo C###### (ex: C022769)</option>
+                                                <option value="bp_supplier">BP - Fornecedor → próximo F###### (ex: F000508)</option>
+                                            </optgroup>
+                                            <optgroup label="Documentos de Venda">
+                                                <option value="17">Ordem de Venda (Sales Order) - 17</option>
+                                                <option value="23">Nota Fiscal de Saída (Invoice) - 23</option>
+                                                <option value="4">Entrega (Delivery) - 4</option>
+                                            </optgroup>
+                                            <optgroup label="Documentos de Compra">
+                                                <option value="18">Pedido de Compra (Purchase Order) - 18</option>
+                                                <option value="13">Nota Fiscal de Entrada (Purchase Invoice) - 13</option>
+                                                <option value="15">Recebimento de Mercadorias (Goods Receipt PO) - 15</option>
+                                            </optgroup>
+                                            <optgroup label="Estoque">
+                                                <option value="59">Transferência de Estoque (Stock Transfer) - 59</option>
+                                            </optgroup>
+                                        </select>
+                                        <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
+                                            Define qual objeto do SAP gerencia esta numeração.
+                                        </p>
+                                    </div>
+
+                                    <div>
+                                        <label className="label" style={{ fontSize: '0.85rem' }}>Código da Série (Opcional)</label>
+                                        <input
+                                            className="input"
+                                            type="number"
+                                            value={seriesCode}
+                                            onChange={e => setSeriesCode(e.target.value === '' ? '' : Number(e.target.value))}
+                                            placeholder="Deixe em branco para usar a série padrão"
+                                        />
+                                        <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
+                                            Código numérico da série no SAP (campo <code>Series</code>). Se vazio, utiliza a série padrão do objeto.
+                                        </p>
+                                    </div>
+
+                                </div>
+                                <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
+                                    O campo de destino receberá o próximo número da sequência definida nas <strong>Séries de Numeração</strong> do SAP B1 (Administração → Definições do Sistema → Séries de Numeração).
+                                </p>
+                            </div>
+                        )}
+
+                        {/* Condition Section */}
+                        <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--card-border)' }}>
+                            <label className="label" style={{ fontWeight: 600, color: 'var(--accent)' }}>Condição de Execução (Opcional)</label>
+                            <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginBottom: '0.5rem' }}>
+                                Aplica esta regra apenas se o valor de outro campo for igual ao especificado.
+                            </p>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                                <div>
+                                    <label className="label">Campo de Condição</label>
+                                    <select
+                                        className="input"
+                                        value={condField}
+                                        onChange={e => setCondField(e.target.value)}
+                                    >
+                                        <option value="">(Sempre Executar)</option>
+                                        {sourceColumns.map(col => (
+                                            <option key={col} value={col}>{col}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="label">Valor Igual a</label>
+                                    <input
+                                        className="input"
+                                        value={condValue}
+                                        onChange={e => setCondValue(e.target.value)}
+                                        placeholder="Ex: J, F, TRUE"
+                                        disabled={!condField}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '2rem' }}>
+                            <button className="btn btn-secondary" onClick={() => setShowRuleModal(false)}>Cancelar</button>
+                            <button className="btn btn-primary" onClick={saveRule}>Salvar Regra</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function AutocompleteInput({ value, onChange, options, placeholder }: { value: string, onChange: (v: string) => void, options: string[], placeholder?: string }) {
+    const [isOpen, setIsOpen] = useState(false);
+    const [coords, setCoords] = useState({ top: 0, left: 0, width: 0 });
+    // Use proper ref
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    // Filter options
+    const filteredOptions = (options || []).filter((opt) =>
+        opt.toLowerCase().includes((value || '').toLowerCase())
+    );
+
+    const updateCoords = () => {
+        if (inputRef.current) {
+            const rect = inputRef.current.getBoundingClientRect();
+            setCoords({
+                top: rect.bottom + window.scrollY,
+                left: rect.left + window.scrollX,
+                width: rect.width
+            });
+        }
+    };
+
+    return (
+        <>
+            <input
+                ref={inputRef}
+                className="input"
+                value={value}
+                onChange={(e) => { onChange(e.target.value); setIsOpen(true); }}
+                onFocus={() => { updateCoords(); setIsOpen(true); }}
+                onBlur={() => setTimeout(() => setIsOpen(false), 200)}
+                placeholder={placeholder}
+            />
+            {isOpen && filteredOptions.length > 0 && typeof document !== 'undefined' && createPortal(
+                <ul style={{
+                    position: 'absolute',
+                    top: coords.top,
+                    left: coords.left,
+                    width: coords.width,
+                    maxHeight: '200px',
+                    overflowY: 'auto',
+                    backgroundColor: '#1f2937', // Dark bg
+                    border: '1px solid #374151',
+                    borderRadius: '0.375rem',
+                    zIndex: 9999,
+                    padding: '0.25rem',
+                    margin: '2px 0 0 0',
+                    listStyle: 'none',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
+                }}>
+                    {filteredOptions.map((opt) => (
+                        <li
+                            key={opt}
+                            style={{ padding: '0.5rem', cursor: 'pointer', fontSize: '0.875rem', color: '#e5e7eb' }}
+                            onMouseDown={() => { onChange(opt); setIsOpen(false); }}
+                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#374151'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+                        >
+                            {opt}
+                        </li>
+                    ))}
+                </ul>,
+                document.body
+            )}
+        </>
+    );
+}

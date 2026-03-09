@@ -3,17 +3,32 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3003",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3003",
+    "pm2:start": "pm2 start npm --name 'migracao-protheus' -- run dev",
+    "pm2:stop": "pm2 stop migracao-protheus",
+    "pm2:restart": "pm2 restart migracao-protheus",
     "lint": "eslint"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.97.0",
+    "@types/pg": "^8.16.0",
+    "ag-grid-community": "^35.1.0",
+    "ag-grid-react": "^35.1.0",
+    "axios": "^1.13.5",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.34.2",
+    "lucide-react": "^0.574.0",
+    "mssql": "^12.2.0",
     "next": "16.1.6",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "tailwind-merge": "^3.4.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/mssql": "^9.1.9",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

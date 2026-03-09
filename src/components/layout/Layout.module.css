@@ -1,0 +1,73 @@
+.sidebar {
+    width: 280px;
+    height: 100vh;
+    background-color: var(--card-bg);
+    border-right: 1px solid var(--card-border);
+    display: flex;
+    flex-direction: column;
+    padding: 1.5rem;
+}
+
+.logo {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 2rem;
+    color: var(--foreground);
+}
+
+.accent {
+    color: var(--primary);
+    margin-left: 0.25rem;
+}
+
+.nav {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    flex: 1;
+}
+
+.navItem {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    color: var(--secondary);
+    text-decoration: none;
+    font-weight: 500;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.navItem:hover {
+    background-color: #334155;
+    color: var(--foreground);
+}
+
+.active {
+    background-color: var(--primary);
+    color: white;
+}
+
+.active:hover {
+    background-color: var(--primary-hover);
+    color: white;
+}
+
+.footer {
+    margin-top: auto;
+    padding-top: 1rem;
+    border-top: 1px solid var(--card-border);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--secondary);
+    font-weight: 500;
+    padding-left: 1rem;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+
+.footer:hover {
+    color: var(--foreground);
+}
