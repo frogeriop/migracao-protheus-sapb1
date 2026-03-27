@@ -10,7 +10,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
-type DocMode = 'orders' | 'journal-entries';
+type DocMode = 'orders' | 'journal-entries' | 'chart-of-accounts' | 'business-partners' | 'items' | 'profit-centers';
 type Scope = 'list' | 'all';
 
 interface SseEvent {
@@ -57,6 +57,26 @@ export default function SapDeletePage() {
     const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
     const [summary, setSummary] = useState<SseEvent | null>(null);
     const [apiError, setApiError] = useState<string | null>(null);
+    const [excelTables, setExcelTables] = useState<any[]>([]);
+
+    useEffect(() => {
+        const fetchEntities = async () => {
+            try {
+                const res = await fetch('/api/migration/entities');
+                const json = await res.json();
+                if (json.success && json.data) {
+                    const tables = json.data
+                        .filter((e: any) => e.staging_table)
+                        .map((e: any) => e.staging_table)
+                        .filter(Boolean);
+                    setExcelTables(Array.from(new Set(tables)));
+                }
+            } catch (e) {
+                console.error('Erro ao buscar tabelas exportadas:', e);
+            }
+        };
+        fetchEntities();
+    }, []);
 
     const logRef = useRef<HTMLDivElement>(null);
 
@@ -65,10 +85,18 @@ export default function SapDeletePage() {
         if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
     }, [logs]);
 
-    const parsedIds = idsInput
+    const parsedIdsNumeric = idsInput
         .split(/[\n,;\s]+/)
         .map(s => Number(s.trim()))
         .filter(n => !isNaN(n) && n > 0);
+
+    const parsedIdsString = idsInput
+        .split(/[\n,;\s]+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+
+    const isNumericTarget = docMode === 'orders' || docMode === 'journal-entries';
+    const parsedIds = isNumericTarget ? parsedIdsNumeric : parsedIdsString;
 
     const isAll = scope === 'all';
     const allConfirmed = isAll ? confirmText.trim() === 'CONFIRMAR' : confirmed;
@@ -201,10 +229,113 @@ export default function SapDeletePage() {
         }
     };
 
+    // ── Excluir Chart Of Accounts (sem SSE, simples) ──────────────────────────
+    const runDeleteCOA = async () => {
+        if (!isAll && !parsedIds.length) return;
+        if (isAll && (!sourceTable || sourceTable === 'se1010')) {
+            setApiError('Por favor, selecione a Tabela de origem primeiro.');
+            return;
+        }
+
+        setRunning(true);
+        setLogs([]);
+        setProgress(null);
+        setSummary(null);
+        setApiError(null);
+
+        const body = isAll 
+            ? { deleteAllFromTable: true, clearWriteback, sourceTable }
+            : { acctCodes: parsedIds, clearWriteback, sourceTable };
+
+        addLog(isAll ? `Preparando exclusão de todas as contas da tabela ${sourceTable}...` : `Enviando ${parsedIds.length} conta(s) para exclusão no SAP...`, 'info');
+        try {
+            const res = await fetch('/api/sap/delete-chart-of-accounts', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const json = await res.json();
+            if (!json.success && !json.total) {
+                addLog(`✕ ${json.message}`, 'error');
+                setApiError(json.message);
+            } else {
+                for (const d of json.details ?? []) {
+                    const id = d.code;
+                    if (d.status === 'deleted') addLog(`✓ AcctCode=${id} excluído.`, 'ok');
+                    else addLog(`✕ AcctCode=${id} — ${d.message}`, 'error');
+                }
+                addLog(`Concluído: ${json.deleted} excluído(s), ${json.errors} erro(s).`, json.errors > 0 ? 'error' : 'ok');
+                setSummary({ type: 'done', cancelled: json.deleted, errors: json.errors, total: json.total, writebackCleared: json.writebackCleared });
+            }
+        } catch (e: any) {
+            setApiError(e.message);
+            addLog(`✕ ${e.message}`, 'error');
+        } finally {
+            setRunning(false);
+            setConfirmed(false);
+            setConfirmText('');
+        }
+    };
+
+    // ── Excluir Entidades Genéricas (BPs, Items, Profit Centers) ────────────
+    const runDeleteGeneric = async () => {
+        if (!isAll && !parsedIds.length) return;
+        if (isAll && !sourceTable) {
+            setApiError('Por favor, selecione a Tabela de origem primeiro.');
+            return;
+        }
+
+        setRunning(true);
+        setLogs([]);
+        setProgress(null);
+        setSummary(null);
+        setApiError(null);
+
+        let entityObject = '';
+        if (docMode === 'business-partners') entityObject = 'BusinessPartners';
+        if (docMode === 'items') entityObject = 'Items';
+        if (docMode === 'profit-centers') entityObject = 'ProfitCenters';
+
+        const body = isAll 
+            ? { entityObject, deleteAllFromTable: true, clearWriteback, sourceTable }
+            : { entityObject, keys: parsedIds, clearWriteback, sourceTable };
+
+        addLog(isAll ? `Preparando exclusão de todas as chaves da tabela ${sourceTable}...` : `Enviando ${parsedIds.length} chave(s) para exclusão no SAP...`, 'info');
+        try {
+            const res = await fetch('/api/sap/delete-entity', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const json = await res.json();
+            if (!json.success && !json.total) {
+                addLog(`✕ ${json.message}`, 'error');
+                setApiError(json.message);
+            } else {
+                for (const d of json.details ?? []) {
+                    const id = d.key;
+                    if (d.status === 'deleted') addLog(`✓ Chave=${id} excluída.`, 'ok');
+                    else addLog(`✕ Chave=${id} — ${d.message}`, 'error');
+                }
+                addLog(`Concluído: ${json.deleted} excluído(s), ${json.errors} erro(s).`, json.errors > 0 ? 'error' : 'ok');
+                setSummary({ type: 'done', cancelled: json.deleted, errors: json.errors, total: json.total, writebackCleared: json.writebackCleared });
+            }
+        } catch (e: any) {
+            setApiError(e.message);
+            addLog(`✕ ${e.message}`, 'error');
+        } finally {
+            setRunning(false);
+            setConfirmed(false);
+            setConfirmText('');
+        }
+    };
+
     const handleRun = () => {
         if (!canRun) return;
         if (docMode === 'orders') runCancelOrders();
-        else runDeleteJE();
+        else if (docMode === 'journal-entries') runDeleteJE();
+        else if (docMode === 'chart-of-accounts') runDeleteCOA();
+        else runDeleteGeneric();
     };
 
     const reset = () => {
@@ -218,15 +349,14 @@ export default function SapDeletePage() {
     };
 
     const actionLabel = docMode === 'orders' ? 'Cancelar' : 'Excluir';
-    const idLabel = docMode === 'orders' ? 'DocEntry' : 'JdtNum';
+    const idLabel = docMode === 'orders' ? 'DocEntry' : docMode === 'journal-entries' ? 'JdtNum' : docMode === 'chart-of-accounts' ? 'AcctCode' : docMode === 'business-partners' ? 'CardCode' : docMode === 'items' ? 'ItemCode' : 'CenterCode';
 
     return (
         <div className="container" style={{ maxWidth: 860 }}>
             <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                {docMode === 'orders'
-                    ? <><Ban size={26} style={{ color: 'var(--error)' }} /> Cancelar Sales Orders no SAP</>
-                    : <><Trash2 size={26} style={{ color: 'var(--error)' }} /> Excluir Journal Entries no SAP</>
-                }
+                {docMode === 'orders' && <><Ban size={26} style={{ color: 'var(--error)' }} /> Cancelar Sales Orders no SAP</>}
+                {docMode === 'journal-entries' && <><Trash2 size={26} style={{ color: 'var(--error)' }} /> Excluir Journal Entries no SAP</>}
+                {(docMode !== 'orders' && docMode !== 'journal-entries') && <><Trash2 size={26} style={{ color: 'var(--error)' }} /> Excluir {idLabel}s ({docMode}) no SAP</>}
             </h1>
 
             {/* ── Tipo de documento ── */}
@@ -234,11 +364,20 @@ export default function SapDeletePage() {
                 <h2 style={{ fontSize: '1rem', marginBottom: '1rem' }}>Tipo de Documento</h2>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                     {([
-                        { id: 'orders', icon: '🛒', label: 'Sales Orders', desc: 'Cancela pedidos de venda. Informe DocEntry(s) ou cancele todos.' },
-                        { id: 'journal-entries', icon: '📒', label: 'Journal Entries (LCMs)', desc: 'Exclui lançamentos contábeis. Informe o(s) JdtNum.' },
+                        { id: 'orders', icon: '🛒', label: 'Sales Orders', desc: 'Cancela pedidos de venda. Informe DocEntry.' },
+                        { id: 'journal-entries', icon: '📒', label: 'Journal Entries (LCMs)', desc: 'Exclui lançamentos contábeis. Informe JdtNum.' },
+                        { id: 'chart-of-accounts', icon: '🏦', label: 'Plano de Contas', desc: 'Exclui contas. Informe os Codes.' },
+                        { id: 'business-partners', icon: '👥', label: 'Parceiros de Negócio', desc: 'Exclui parceiros de negócio. Informe os CardCodes.' },
+                        { id: 'items', icon: '📦', label: 'Itens (Produtos)', desc: 'Exclui produtos cadastrados. Informe os ItemCodes.' },
+                        { id: 'profit-centers', icon: '🏢', label: 'Centros de Custo', desc: 'Exclui centros de custo do SAP. Informe os CenterCodes.' }
                     ] as { id: DocMode; icon: string; label: string; desc: string }[]).map(m => (
                         <div key={m.id}
-                            onClick={() => { setDocMode(m.id); reset(); setScope('list'); }}
+                            onClick={() => { 
+                                setDocMode(m.id); 
+                                reset(); 
+                                setScope('list'); 
+                                setSourceTable((m.id !== 'orders' && m.id !== 'journal-entries') ? '' : 'se1010'); 
+                            }}
                             style={{
                                 padding: '1rem 1.25rem', borderRadius: 10, cursor: 'pointer', transition: 'all 0.15s',
                                 border: `2px solid ${docMode === m.id ? 'var(--error)' : 'var(--card-border)'}`,
@@ -252,14 +391,14 @@ export default function SapDeletePage() {
                 </div>
             </div>
 
-            {/* ── Escopo (somente Orders) ── */}
-            {docMode === 'orders' && (
+            {/* ── Escopo (Geral, exceto JE) ── */}
+            {(docMode !== 'journal-entries') && (
                 <div className="card" style={{ marginBottom: '1.25rem' }}>
-                    <h2 style={{ fontSize: '1rem', marginBottom: '1rem' }}>Escopo do Cancelamento</h2>
+                    <h2 style={{ fontSize: '1rem', marginBottom: '1rem' }}>Escopo {docMode === 'orders' ? 'do Cancelamento' : 'da Exclusão'}</h2>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                         {([
-                            { id: 'list', icon: '🔢', label: 'Por lista de DocEntries', desc: 'Informe manualmente os números.' },
-                            { id: 'all', icon: '💣', label: 'Cancelar TODOS os abertos', desc: 'Busca e cancela todos os Orders com status aberto.' },
+                            { id: 'list', icon: '🔢', label: `Por lista de ${idLabel}s`, desc: 'Informe manualmente os códigos.' },
+                            { id: 'all', icon: '💣', label: docMode === 'orders' ? 'Cancelar TODOS os abertos' : 'Excluir TODOS do arquivo', desc: docMode === 'orders' ? 'Busca e cancela todos os Orders abertos.' : 'Exclui todas as entitades vinculadas à origem selecionada.' },
                         ] as { id: Scope; icon: string; label: string; desc: string }[]).map(s => (
                             <div key={s.id}
                                 onClick={() => { setScope(s.id); reset(); }}
@@ -303,15 +442,27 @@ export default function SapDeletePage() {
                 <div style={{ display: 'grid', gap: '0.75rem' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem' }}>
                         <input type="checkbox" checked={clearWriteback} onChange={e => setClearWriteback(e.target.checked)} />
-                        Zerar <code>sap_jdt_num</code> no Supabase após {docMode === 'orders' ? 'cancelamento' : 'exclusão'} (permite reintegrar depois)
+                        {docMode !== 'orders' && docMode !== 'journal-entries'
+                            ? <>Zerar referência de origem na tabela de Staging (permite reintegrar)</>
+                            : <>Zerar <code>sap_jdt_num / sap_docentry</code> no Supabase após {docMode === 'orders' ? 'cancelamento' : 'exclusão'} (permite reintegrar depois)</>
+                        }
                     </label>
                     {clearWriteback && (
                         <div style={{ marginLeft: '1.5rem' }}>
-                            <label className="label" style={{ fontSize: '0.82rem' }}>Tabela Supabase</label>
-                            <select className="input" value={sourceTable} onChange={e => setSourceTable(e.target.value)} style={{ maxWidth: 280 }}>
-                                <option value="se1010">se1010 — Contas a Receber</option>
-                                <option value="se2010">se2010 — Contas a Pagar</option>
-                            </select>
+                            <label className="label" style={{ fontSize: '0.82rem' }}>Tabela de Origem ou Nome da Planilha</label>
+                            {docMode !== 'orders' && docMode !== 'journal-entries' ? (
+                                <select className="input" value={sourceTable} onChange={e => setSourceTable(e.target.value)} style={{ maxWidth: 280 }}>
+                                    <option value="">Selecione a Tabela...</option>
+                                    {excelTables.map((t: string) => (
+                                        <option key={t} value={t}>{t}</option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <select className="input" value={sourceTable} onChange={e => setSourceTable(e.target.value)} style={{ maxWidth: 280 }}>
+                                    <option value="se1010">se1010 — Contas a Receber</option>
+                                    <option value="se2010">se2010 — Contas a Pagar</option>
+                                </select>
+                            )}
                         </div>
                     )}
                 </div>
@@ -324,8 +475,10 @@ export default function SapDeletePage() {
                         <AlertTriangle size={20} style={{ color: 'var(--error)', flexShrink: 0, marginTop: 2 }} />
                         <div style={{ fontSize: '0.875rem', lineHeight: 1.6 }}>
                             <strong style={{ color: 'var(--error)' }}>Atenção: operação irreversível!</strong><br />
-                            {docMode === 'orders' ? 'Os pedidos serão cancelados no SAP.' : 'Os lançamentos serão excluídos permanentemente.'}
-                            {clearWriteback && <> O campo <code>sap_jdt_num</code> será zerado para permitir reintegração.</>}
+                            {docMode === 'orders' ? 'Os pedidos serão cancelados no SAP.' : 
+                             docMode === 'chart-of-accounts' ? 'As contas serão excluídas permanentemente.' :
+                             'Os lançamentos serão excluídos permanentemente.'}
+                            {clearWriteback && <> A referência/ID na staging será zerada.</>}
                         </div>
                     </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem', fontWeight: 600 }}>
@@ -336,15 +489,18 @@ export default function SapDeletePage() {
             )}
 
             {/* ── Confirmação especial (cancelar todos) ── */}
-            {isAll && docMode === 'orders' && (
+            {isAll && (docMode !== 'journal-entries') && (
                 <div style={{ padding: '1.25rem', borderRadius: 10, marginBottom: '1.25rem', backgroundColor: 'rgba(239,68,68,0.1)', border: '2px solid rgba(239,68,68,0.5)' }}>
                     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start', marginBottom: '1rem' }}>
                         <ShieldAlert size={24} style={{ color: 'var(--error)', flexShrink: 0, marginTop: 2 }} />
                         <div style={{ fontSize: '0.9rem', lineHeight: 1.7 }}>
-                            <strong style={{ color: 'var(--error)', fontSize: '1rem' }}>⚠️ CANCELAMENTO TOTAL</strong><br />
-                            Todos os Sales Orders com status <strong>aberto</strong> serão cancelados no SAP B1.<br />
-                            {clearWriteback && <>O campo <code>sap_jdt_num</code> será zerado em toda a tabela <strong>{sourceTable}</strong>.<br /></>}
-                            <strong>Não é possível desfazer o cancelamento.</strong>
+                            <strong style={{ color: 'var(--error)', fontSize: '1rem' }}>⚠️ EXCLUSÃO / CANCELAMENTO TOTAL</strong><br />
+                            {docMode === 'orders' 
+                                ? <>Todos os Sales Orders com status <strong>aberto</strong> serão cancelados no SAP B1.<br/></>
+                                : <>Todos os registros previamente integrados selecionados pela origem <strong>{sourceTable}</strong> serão apagados do SAP.<br/></>
+                            }
+                            {clearWriteback && <>As referências serão zeradas na tabela <strong>{sourceTable}</strong>.<br /></>}
+                            <strong>Não é possível desfazer esta operação!</strong>
                         </div>
                     </div>
                     <label className="label" style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>
@@ -380,7 +536,7 @@ export default function SapDeletePage() {
                 {running
                     ? `${actionLabel}ndo... aguarde`
                     : isAll
-                        ? `💣 ${actionLabel} TODOS os Orders abertos`
+                        ? `💣 ${actionLabel} TOD${docMode === 'orders' ? 'OS os Orders abertos' : 'AS as contas da tabela'}`
                         : `${actionLabel} ${parsedIds.length || '?'} documento(s)`
                 }
             </button>

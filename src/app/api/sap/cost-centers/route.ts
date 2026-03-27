@@ -26,7 +26,6 @@ async function sapLogin(config: AppConfig): Promise<string[]> {
  * Busca TODOS os centros de custo do SAP, paginando internamente.
  */
 async function fetchAllCenters(serviceLayerUrl: string, cookieStr: string): Promise<any[]> {
-    const TOP = 200;
     const all: any[] = [];
     let skip = 0;
 
@@ -35,12 +34,13 @@ async function fetchAllCenters(serviceLayerUrl: string, cookieStr: string): Prom
             httpsAgent,
             headers: { Cookie: cookieStr },
             // Sem $select para evitar erros de propriedade inválida nesta versão do SAP SL
-            params: { $skip: skip, $top: TOP },
+            params: { $skip: skip },
         });
         const items: any[] = res.data?.value || [];
+        if (items.length === 0) break;
+        
         all.push(...items);
-        if (items.length < TOP) break;
-        skip += TOP;
+        skip += items.length;
     }
 
     return all;

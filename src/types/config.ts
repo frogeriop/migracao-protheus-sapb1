@@ -20,8 +20,14 @@ export interface SupabaseConfig {
     key: string;
 }
 
+export interface ExcelConfig {
+    lastUploadedFile?: string;
+    stagingTable: string;
+}
+
 export interface AppConfig {
     protheus: ProtheusConfig;
     sap: SapConfig;
     supabase: SupabaseConfig;
+    excel?: ExcelConfig;
 }

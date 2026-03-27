@@ -1,0 +1,5 @@
+Code;Name;ActiveAccount;AccountType;FatherAccountKey;FormatCode;U_TX_ContaCOSIF;U_TX_CodigoDesIf;U_TX_OutrosProdServDesIf;U_TX_Des_Mista;U_TX_Des_ContaSuperior;U_TX_NatAccount;U_TX_NAT_REC;U_TX_TipoReceitaBruta;U_TX_RegCaixa;U_TX_OcultarConta
+10000000;Ativo;tYES;at_Other;;;;;;;;;;;;
+20000000;Passivo;tYES;at_Other;;;;;;;;;;;;
+30000000;Receitas;tYES;at_Revenues;;;;;;;;;;;;
+40000000;Despesas;tYES;at_Expenses;;;;;;;;;;;;

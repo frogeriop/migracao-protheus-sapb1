@@ -27,11 +27,11 @@ async function sapLogin(config: AppConfig): Promise<string> {
  *
  * Body: {
  *   jdtNums: number[]          // Lista de DocEntry (JdtNum) a excluir
- *   clearWriteback?: boolean   // Se true, zera sap_jdt_num no Supabase após excluir (default: true)
+ *   clearWriteback?: boolean   // Se true, zera __sap_id no Supabase após excluir (default: true)
  * }
  *
  * Exclui os Journal Entries do SAP B1 via Service Layer e,
- * opcionalmente, limpa o campo sap_jdt_num nas tabelas se2010/se1010 do Supabase.
+ * opcionalmente, limpa o campo __sap_id nas tabelas se2010/se1010 do Supabase.
  */
 export async function POST(request: Request) {
     try {
@@ -69,7 +69,7 @@ export async function POST(request: Request) {
             }
         }
 
-        // Write-back: zera sap_jdt_num nos registros que foram excluídos com sucesso
+        // Write-back: zera __sap_id nos registros que foram excluídos com sucesso
         const deleted = results.filter(r => r.status === 'deleted').map(r => r.jdtNum);
         let writebackCleared = 0;
 
@@ -80,13 +80,13 @@ export async function POST(request: Request) {
             for (const tbl of tables) {
                 const { error, count } = await supabase
                     .from(tbl)
-                    .update({ sap_jdt_num: null })
-                    .in('sap_jdt_num', deleted);
+                    .update({ __sap_id: null })
+                    .in('__sap_id', deleted);
                 if (error) {
                     console.warn(`[delete-je] write-back clear failed for ${tbl}:`, error.message);
                 } else {
                     writebackCleared += count ?? 0;
-                    console.log(`[delete-je] write-back: ${count ?? 0} registros de ${tbl} tiveram sap_jdt_num zerado.`);
+                    console.log(`[delete-je] write-back: ${count ?? 0} registros de ${tbl} tiveram __sap_id zerado.`);
                 }
             }
         }

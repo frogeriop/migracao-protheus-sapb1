@@ -23,61 +23,37 @@ async function getMappings(): Promise<{ [key: string]: TableMapping }> {
     }
 }
 
-// ── Tabelas que suportam write-back de sap_code ─────────────────────────────
+// ── Tabelas que suportam write-back de __sap_id ─────────────────────────────
 // Mapa: sourceTable → { pkField: coluna PK no Protheus, sapField: campo SAP retornado }
-const SAP_CODE_WRITEBACK: Record<string, { pkField: string; sapField: string }> = {
+const SAP_ID_WRITEBACK: Record<string, { pkField: string; sapField: string }> = {
     SA1010: { pkField: 'a1_cod', sapField: 'CardCode' },
     SA2010: { pkField: 'a2_cod', sapField: 'CardCode' },
     SB1010: { pkField: 'b1_cod', sapField: 'ItemCode' },
+    stg_plano_contas: { pkField: 'Code', sapField: 'Code' },
 };
 
 /**
- * Write-back do JdtNum do SAP para {se2010|se1010}.sap_jdt_num após integração bem-sucedida.
- * Usa o r_e_c_n_o_ (PK interna do Protheus/Supabase) como chave de update.
- * Funciona para SE2010 (JournalEntries) e SE1010 (Invoices/PurchaseInvoices).
+ * Write-back: salva o ID (ex: CardCode/ItemCode/JdtNum/DocEntry) do SAP de volta na tabela de staging do Supabase.
  */
-async function writeJdtNumBack(
-    supabase: any,
-    pgTable: 'se2010' | 'se1010',
-    recno: number,
-    jdtNum: number
-) {
-    if (!recno || !jdtNum) return;
-    const { error } = await supabase
-        .from(pgTable)
-        .update({ sap_jdt_num: jdtNum })
-        .eq('r_e_c_n_o_', recno);
-
-    if (error) {
-        console.warn(`[execute] write-back sap_jdt_num falhou para ${pgTable}/recno=${recno}:`, error.message);
-    } else {
-        console.log(`[execute] write-back OK: ${pgTable}/recno=${recno} → sap_jdt_num=${jdtNum}`);
-    }
-}
-
-/**
- * Write-back: salva o CardCode/ItemCode do SAP de volta na tabela de staging do Supabase.
- * Isso permite que outros módulos (ex: SE2010) resolvam o CardCode pelo código Protheus.
- */
-async function writeSapCodeBack(
+async function writeSapIdBack(
     supabase: any,
     table: string,
-    protheus_pk_value: string,
-    sapCode: string
+    pkColumn: string,
+    pkValue: string | number,
+    sapId: string | number
 ) {
-    const cfg = SAP_CODE_WRITEBACK[table];
-    if (!cfg || !protheus_pk_value || !sapCode) return;
+    if (!pkColumn || !pkValue || !sapId) return;
 
     const pgTable = table.toLowerCase();
     const { error } = await (supabase as any)
         .from(pgTable)
-        .update({ sap_code: sapCode })
-        .eq(cfg.pkField, protheus_pk_value);
+        .update({ __sap_id: String(sapId) })
+        .eq(pkColumn, pkValue);
 
     if (error) {
-        console.warn(`[execute] write-back sap_code falhou para ${table}/${protheus_pk_value}:`, error.message);
+        console.warn(`[execute] write-back __sap_id falhou para ${table}/${pkValue}:`, error.message);
     } else {
-        console.log(`[execute] write-back OK: ${table}/${protheus_pk_value} → sap_code=${sapCode}`);
+        console.log(`[execute] write-back OK: ${table}/${pkValue} → __sap_id=${sapId}`);
     }
 }
 
@@ -87,7 +63,7 @@ export async function POST(request: Request) {
         const body = await request.json();
         // source_pk: chave Protheus original (a1_cod, a2_cod, b1_cod) — enviada pela página de execução
         // source_recno: r_e_c_n_o_ do SE2010, usado para write-back de sap_jdt_num
-        const { table, targetObject, payload, action, source_pk, source_recno } = body;
+        const { table, targetObject, payload, action, source_pk, source_recno, source_row_id } = body;
 
         const config = await getConfig();
         const supabase = createClient(config.supabase.url, config.supabase.key, { auth: { persistSession: false } });
@@ -112,12 +88,110 @@ export async function POST(request: Request) {
         let key: string | number = '';
         if (targetObject === 'BusinessPartners') key = payload.CardCode;
         if (targetObject === 'Items') key = payload.ItemCode;
+        if (targetObject === 'ChartOfAccounts') key = payload.Code;
         if (targetObject === 'Invoices' || targetObject === 'PurchaseInvoices') key = payload.DocEntry;
         if (targetObject === 'JournalEntries') key = payload._sapJdtNum || payload.JdtNum || '';
         if (targetObject === 'Orders') key = payload._sapDocEntry || payload.DocEntry || '';
+        if (targetObject === 'ProfitCenters') key = payload.CenterCode || '';
+
+        let finalAction = action;
+
+        // --- UNIVERSAL PRE-FLIGHT CHECK ---
+        // Se a ação for de inserção e tivermos a chave primária mapeada no payload,
+        // checa primeiro se ele já existe no SAP Service Layer.
+        if (finalAction === 'insert' && key) {
+            const isNumericKey = ['Orders', 'JournalEntries', 'Invoices', 'PurchaseInvoices'].includes(targetObject);
+            // Replace simple quotes with double single quotes for OData escaping
+            const escapedKey = String(key).replace(/'/g, "''");
+            const keyStr = isNumericKey ? escapedKey : `'${escapedKey}'`;
+            const checkUrl = `${config.sap.serviceLayerUrl}/${targetObject}(${keyStr})`;
+            
+            try {
+                // Fazer request GET (apenas selecionando um campo simples para ser rápido)
+                const checkRes = await fetch(`${checkUrl}?$select=${isNumericKey ? 'ObjectCode' : 'UpdateDate'}`, {
+                    method: 'GET',
+                    headers: { 'Cookie': cookies || '' }
+                });
+                
+                if (checkRes.ok) {
+                    console.log(`[execute] Registro ${key} já existe em ${targetObject}. Mudando ação de INSERT para UPDATE.`);
+                    finalAction = 'update';
+                }
+            } catch (err) {
+                console.warn(`[execute] Erro no pre-flight check para ${targetObject}(${key}):`, err);
+            }
+        }
+
+        // ── IBGE to SAP AbsId Translation (`County`) ──
+        // SAP B1 requires the County field in BPAddresses to be the internal AbsId of the OCNT table, not the IBGE code string.
+        if (targetObject === 'BusinessPartners' && Array.isArray(payload.BPAddresses)) {
+            for (const addr of payload.BPAddresses) {
+                if (addr.County && !isNaN(Number(addr.County)) && String(addr.County).length >= 4) {
+                    console.log(`[execute] Intercepting SAP County IBGE Code: ${addr.County}`);
+                    try {
+                        const ibgeStr = String(addr.County);
+                        let translated = false;
+
+                        // 1. OData Fallback First (Safest method - assumes Code is the IBGE or Internal Code like '921')
+                        const oDataRes = await fetch(`${config.sap.serviceLayerUrl}/Counties?$select=AbsId,Code,Name&$filter=Code eq '${ibgeStr}'`, {
+                            headers: { 'Cookie': cookies || '' }
+                        });
+                        
+                        if (oDataRes.ok) {
+                            const oData = await oDataRes.json();
+                            if (oData.value && oData.value.length > 0) {
+                                addr.County = String(oData.value[0].AbsId);
+                                translated = true;
+                                console.log(`[execute] OData Transformed IBGE ${ibgeStr} -> OCNT.AbsId ${addr.County} (${oData.value[0].Name})`);
+                            }
+                        }
+
+                        // 2. Aggressive SQLQueries if OData failed (Try matching IbgeCode column if standard Code didn't match)
+                        if (!translated) {
+                            const qryCode = 'QRY_GET_COUNTY';
+                            try { await fetch(`${config.sap.serviceLayerUrl}/SQLQueries('${qryCode}')`, { method: 'DELETE', headers: { Cookie: cookies || '' } }); } catch {}
+                            
+                            const qryRes = await fetch(`${config.sap.serviceLayerUrl}/SQLQueries`, {
+                                method: 'POST',
+                                headers: { 'Cookie': cookies || '', 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    SqlCode: qryCode,
+                                    SqlName: "Get County IBGE",
+                                    SqlText: `SELECT "AbsId" FROM "OCNT" WHERE "IbgeCode" = '${ibgeStr}'`
+                                })
+                            });
+
+                            if (qryRes.ok) {
+                                const countyRes = await fetch(`${config.sap.serviceLayerUrl}/SQLQueries('${qryCode}')/List`, {
+                                    headers: { 'Cookie': cookies || '' }
+                                });
+                                if (countyRes.ok) {
+                                    const countyData = await countyRes.json();
+                                    if (countyData.value && countyData.value.length > 0) {
+                                        addr.County = String(countyData.value[0].AbsId);
+                                        translated = true;
+                                        console.log(`[execute] SQLQueries Transformed IBGE ${ibgeStr} -> OCNT.AbsId ${addr.County}`);
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!translated) {
+                            console.warn(`[execute] Ignored County IBGE ${ibgeStr} (Not found in SAP OCNT)`);
+                            delete addr.County;
+                        }
+
+                    } catch (e) {
+                        console.error('[execute] Failed to translate County IBGE.', e);
+                        delete addr.County;
+                    }
+                }
+            }
+        }
+
 
         // ── JournalEntries: PATCH cirúrgico com campos comprovadamente aceitos ──────
-        if (targetObject === 'JournalEntries' && action === 'update') {
+        if (targetObject === 'JournalEntries' && finalAction === 'update') {
             if (!key) {
                 return NextResponse.json({
                     success: false,
@@ -141,7 +215,7 @@ export async function POST(request: Request) {
             if (patchRes.status === 204 || patchRes.ok) {
                 if (source_recno && key) {
                     const pgTbl = table === 'SE1010' ? 'se1010' : 'se2010';
-                    await writeJdtNumBack(supabase, pgTbl, Number(source_recno), Number(key));
+                    await writeSapIdBack(supabase, pgTbl, 'r_e_c_n_o_', source_recno, key);
                 }
                 return NextResponse.json({
                     success: true,
@@ -164,7 +238,7 @@ export async function POST(request: Request) {
         // ── Orders (SE1010): PATCH com campos atualizáveis ───────────────────────
         // DocEntry é numérico → URL sem aspas: /Orders(5176) e não /Orders('5176')
         // Campos imutáveis em Orders: CardCode, CardName, DocType, DocumentLines (não atualiza linhas via PATCH)
-        if (targetObject === 'Orders' && action === 'update') {
+        if (targetObject === 'Orders' && finalAction === 'update') {
             if (!key) {
                 return NextResponse.json({
                     success: false,
@@ -189,9 +263,9 @@ export async function POST(request: Request) {
             });
 
             if (patchRes.status === 204 || patchRes.ok) {
-                // Write-back do DocEntry (reutilizando sap_jdt_num)
+                // Write-back do DocEntry (reutilizando __sap_id)
                 if (source_recno && key) {
-                    await writeJdtNumBack(supabase, 'se1010', Number(source_recno), Number(key));
+                    await writeSapIdBack(supabase, 'se1010', 'r_e_c_n_o_', source_recno, key);
                 }
                 return NextResponse.json({
                     success: true,
@@ -214,11 +288,17 @@ export async function POST(request: Request) {
 
         let response;
 
-        if (action === 'insert') {
+        if (finalAction === 'insert') {
             const insertPayload = { ...payload };
             // Remover campos internos do pipeline antes de enviar ao SAP
             delete insertPayload._sapJdtNum;
             delete insertPayload._sapDocEntry;
+
+            // Limpeza defensiva de campos vazios para ChartOfAccounts
+            if (targetObject === 'ChartOfAccounts') {
+                if (insertPayload.AccountType === '') delete insertPayload.AccountType;
+                if (insertPayload.FormatCode === '') delete insertPayload.FormatCode;
+            }
 
             // DocumentLines para Orders deve ser array
             if (targetObject === 'Orders' && insertPayload.DocumentLines && !Array.isArray(insertPayload.DocumentLines)) {
@@ -231,11 +311,14 @@ export async function POST(request: Request) {
                 body: JSON.stringify(insertPayload)
             });
 
-        } else if (action === 'update') {
+        } else if (finalAction === 'update') {
             // Remove PK and immutable fields for Update
             const updatePayload = { ...payload };
             delete updatePayload.CardCode;  // PK: cannot be sent in update body
             delete updatePayload.CardType;  // Immutable: type cannot change
+            delete updatePayload.ItemCode;  // PK Items
+            delete updatePayload.Code;      // PK ChartOfAccounts
+            delete updatePayload.CenterCode; // PK ProfitCenters
 
             // ── Smart Matching para BusinessPartners ─────────────────────────────────
             // Busca estado atual do BP para:
@@ -338,19 +421,34 @@ export async function POST(request: Request) {
                 });
             }
 
-            // ── Write-back: PATCH bem-sucedido → sap_code já era conhecido (= key) ──
-            // Para UPDATE, o CardCode/ItemCode já estava em payload.CardCode/ItemCode
-            if (source_pk && key && SAP_CODE_WRITEBACK[table]) {
-                await writeSapCodeBack(supabase, table, source_pk, String(key));
+            // ── Write-back: PATCH bem-sucedido → __sap_id já era conhecido (= key) ──
+            const sapIdToSave = key;
+            if (sapIdToSave) {
+                if (source_row_id) {
+                    await supabase
+                        .from(table.toLowerCase())
+                        .update({ __sap_id: String(sapIdToSave) })
+                        .or(`__source_key.eq.${source_row_id},id.eq.${source_row_id}`);
+                } else if (source_pk && SAP_ID_WRITEBACK[table]) {
+                    await writeSapIdBack(supabase, table, SAP_ID_WRITEBACK[table].pkField, source_pk, sapIdToSave);
+                } else if (source_recno && (table === 'SE1010' || table === 'SE2010')) {
+                    await writeSapIdBack(supabase, table, 'r_e_c_n_o_', source_recno, sapIdToSave);
+                } else if (source_pk || source_recno) {
+                    const fallbackSource = source_pk || source_recno;
+                    await supabase
+                        .from(table.toLowerCase())
+                        .update({ __sap_id: String(sapIdToSave) })
+                        .or(`__source_key.eq.${fallbackSource},id.eq.${fallbackSource}`);
+                }
             }
 
             // Para PATCH, geralmente 204 No Content
             if (response.status === 204) {
-                return NextResponse.json({ success: true, data: { [SAP_CODE_WRITEBACK[table]?.sapField ?? 'key']: key } });
+                return NextResponse.json({ success: true, data: { [SAP_ID_WRITEBACK[table]?.sapField ?? 'key']: key } });
             }
 
         } else {
-            return NextResponse.json({ success: false, message: 'Invalid action: ' + action });
+            return NextResponse.json({ success: false, message: 'Invalid action: ' + finalAction });
         }
 
         // Shared Response Handling
@@ -364,25 +462,26 @@ export async function POST(request: Request) {
             return NextResponse.json({ success: false, message: json.error?.message?.value || 'Unknown SAP Error' });
         }
 
-        // ── Write-back: INSERT bem-sucedido → salva sap_code retornado pelo SAP ──
-        if (action === 'insert' && source_pk && SAP_CODE_WRITEBACK[table]) {
-            const cfg = SAP_CODE_WRITEBACK[table];
-            const sapCode = json[cfg.sapField]; // ex: json.CardCode ou json.ItemCode
-            if (sapCode) {
-                await writeSapCodeBack(supabase, table, source_pk, sapCode);
+        // ── Write-back: INSERT bem-sucedido → salva __sap_id retornado pelo SAP ──
+        const sapIdToSave = json?.Code || json?.DocEntry || json?.ItemCode || json?.CardCode || json?.JdtNum || key;
+        
+        if (sapIdToSave) {
+            if (source_row_id) {
+                await supabase
+                    .from(table.toLowerCase())
+                    .update({ __sap_id: String(sapIdToSave) })
+                    .or(`__source_key.eq.${source_row_id},id.eq.${source_row_id}`);
+            } else if (source_pk && SAP_ID_WRITEBACK[table]) {
+                await writeSapIdBack(supabase, table, SAP_ID_WRITEBACK[table].pkField, source_pk, sapIdToSave);
+            } else if (source_recno && (table === 'SE1010' || table === 'SE2010')) {
+                await writeSapIdBack(supabase, table, 'r_e_c_n_o_', source_recno, sapIdToSave);
+            } else if (source_pk || source_recno) {
+                const fallbackSource = source_pk || source_recno;
+                await supabase
+                    .from(table.toLowerCase())
+                    .update({ __sap_id: String(sapIdToSave) })
+                    .or(`__source_key.eq.${fallbackSource},id.eq.${fallbackSource}`);
             }
-        }
-
-        // ── Write-back: SE1010 INSERT → salva DocEntry em sap_jdt_num ────────────
-        // Sales Orders retornam DocEntry (não JdtNum). Reutilizamos sap_jdt_num para armazenar.
-        if (action === 'insert' && table === 'SE1010' && source_recno && json?.DocEntry) {
-            await writeJdtNumBack(supabase, 'se1010', Number(source_recno), Number(json.DocEntry));
-            console.log(`[execute] SE1010 write-back: recno=${source_recno} → sap_jdt_num(DocEntry)=${json.DocEntry}`);
-        }
-
-        // ── Write-back: SE2010 INSERT → salva JdtNum em sap_jdt_num ────────────
-        if (action === 'insert' && table === 'SE2010' && source_recno && json?.JdtNum) {
-            await writeJdtNumBack(supabase, 'se2010', Number(source_recno), Number(json.JdtNum));
         }
 
         return NextResponse.json({ success: true, data: json });

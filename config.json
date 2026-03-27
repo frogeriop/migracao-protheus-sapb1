@@ -9,9 +9,9 @@
   },
   "sap": {
     "serviceLayerUrl": "https://sap-alfasap-sl.skyinone.net:50000/b1s/v1",
-    "companyDB": "SBO_ALFAERP_PRD",
-    "userName": "fabio",
-    "password": "Feel2025@!",
+    "companyDB": "SBO_ALFAERP_PROD",
+    "userName": "manager",
+    "password": "B1admin@",
     "language": "29"
   },
   "supabase": {

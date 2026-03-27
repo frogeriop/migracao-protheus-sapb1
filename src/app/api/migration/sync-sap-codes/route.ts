@@ -13,10 +13,10 @@ async function getConfig(): Promise<AppConfig> {
 /**
  * POST /api/migration/sync-sap-codes
  *
- * Ressincroniza sap_code nas tabelas de cadastro (SA1010, SA2010, SB1010)
+ * Ressincroniza __sap_id nas tabelas de cadastro (SA1010, SA2010, SB1010)
  * consultando BusinessPartners e Items no SAP B1 e gravando os códigos de volta.
  *
- * Útil após reimportação do TOTVS (que destrói a coluna sap_code).
+ * Útil após reimportação do TOTVS (que destrói a coluna __sap_id).
  */
 export async function POST(request: Request) {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -60,26 +60,26 @@ export async function POST(request: Request) {
         };
         const cfg = tableConfig[table];
 
-        // ── 3. Busca registros do Supabase sem sap_code (inclui CNPJ para cruzamento) ──
+        // ── 3. Busca registros do Supabase sem __sap_id (inclui CNPJ para cruzamento) ──
         const cgcField = table === 'SA1010' ? 'a1_cgc' : table === 'SA2010' ? 'a2_cgc' : null;
         const selectFields = cgcField
-            ? `${cfg.pkField}, ${cgcField}, sap_code`
-            : `${cfg.pkField}, sap_code`;
+            ? `${cfg.pkField}, ${cgcField}, __sap_id`
+            : `${cfg.pkField}, __sap_id`;
 
         const { data: localRows, error: localErr } = await supabase
             .from(cfg.pgTable)
             .select(selectFields)
-            .is('sap_code', null)
+            .is('__sap_id', null)
             .eq('d_e_l_e_t_', '');
 
         if (localErr) {
             return NextResponse.json({ success: false, message: localErr.message });
         }
         if (!localRows || localRows.length === 0) {
-            return NextResponse.json({ success: true, updated: 0, message: 'Nenhum registro sem sap_code encontrado.' });
+            return NextResponse.json({ success: true, updated: 0, message: 'Nenhum registro sem __sap_id encontrado.' });
         }
 
-        console.log(`[sync-sap-codes] ${table}: ${localRows.length} registros sem sap_code.`);
+        console.log(`[sync-sap-codes] ${table}: ${localRows.length} registros sem __sap_id.`);
 
         // ── 4. Busca todos os BPs/Items do SAP com CardCode + FederalTaxID ─────────
         // Para BPs (SA1010/SA2010): cruzamento por FederalTaxID (CNPJ/CPF) — chave confiável
@@ -176,12 +176,12 @@ export async function POST(request: Request) {
             if (resolvedSapCode) {
                 const { error: upErr } = await supabase
                     .from(cfg.pgTable)
-                    .update({ sap_code: resolvedSapCode })
+                    .update({ __sap_id: resolvedSapCode })
                     .eq(cfg.pkField, pkVal);
 
                 if (!upErr) {
                     updated++;
-                    console.log(`[sync-sap-codes] ${table}/${pkVal} (CNPJ-match) → sap_code=${resolvedSapCode}`);
+                    console.log(`[sync-sap-codes] ${table}/${pkVal} (CNPJ-match) → __sap_id=${resolvedSapCode}`);
                 }
             } else {
                 notFound++;
@@ -194,7 +194,7 @@ export async function POST(request: Request) {
             totalSemCodigo: localRows.length,
             updated,
             notFound,
-            message: `${updated} registros atualizados com sap_code. ${notFound} não encontrados no SAP (não integrados).`,
+            message: `${updated} registros atualizados com __sap_id. ${notFound} não encontrados no SAP (não integrados).`,
         });
 
     } catch (error: any) {

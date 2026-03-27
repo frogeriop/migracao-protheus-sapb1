@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ColDef, ModuleRegistry, Theme } from 'ag-grid-community';
 import { X, Loader2 } from 'lucide-react';
-import { themeBalham, themeQuartz, themeAlpine, colorSchemeDark } from 'ag-grid-community';
+
 
 // Register all community modules
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -130,7 +130,6 @@ export function AgGridModal({ title, isOpen, onClose, columnDefs, fetchData }: A
                                     sortable: true,
                                     filter: true
                                 }}
-                                theme={themeBalham.withPart(colorSchemeDark)}
                                 pagination={true}
                                 paginationPageSize={100}
                                 paginationPageSizeSelector={[100, 200, 500]}

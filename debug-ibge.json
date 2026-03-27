@@ -1,0 +1,23 @@
+{
+  "success": true,
+  "parsedUf": "MA",
+  "exactIbge": "2111300",
+  "sf": "a1_cod_mun",
+  "sv": "11300",
+  "lf": "municipio",
+  "fieldTarget": "BPAddresses.County",
+  "debugData": {
+    "codigo_ibge": "2111300",
+    "nome_municipio": "São Luís",
+    "uf": "21",
+    "created_at": "2026-02-19T02:06:18.854671+00:00",
+    "updated_at": "2026-02-19T02:06:18.854671+00:00",
+    "nome_uf": "Maranhão",
+    "regiao_geografica_intermediaria": "2101",
+    "nome_regiao_geografica_intermediaria": "São Luís",
+    "regiao_geografica_imediata": "210001",
+    "nome_regiao_geografica_imediata": "São Luís",
+    "municipio": "11300",
+    "codigo_municipio_completo": "2111300"
+  }
+}

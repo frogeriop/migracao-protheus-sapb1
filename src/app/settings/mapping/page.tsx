@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Layers, ArrowRight, Settings, Plus, Save, Trash2, Edit, Play } from 'lucide-react';
+import { Layers, ArrowRight, Settings, Plus, Save, Trash2, Edit, Play, Loader2 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useMapping } from '@/hooks/useMapping';
 import { useConfig } from '@/hooks/useConfig';
@@ -9,27 +9,24 @@ import { FieldMapping, MappingRule, RuleType, ValueMap } from '@/types/mapping';
 import { TransformationUtils } from '@/utils/transformations';
 import { supabase } from '@/lib/supabase';
 
-const TABLE_OPTIONS = [
-    { code: 'SA1010', name: 'Clientes (BusinessPartners)' },
-    { code: 'SA2010', name: 'Fornecedores (BusinessPartners)' },
-    { code: 'SB1010', name: 'Produtos (Items)' },
-    { code: 'SE1010', name: 'Contas a Receber (Orders/A\u2019R Invoice)' },
-    { code: 'SE2010', name: 'Contas a Pagar (JournalEntries)' },
+type TableOption = { code: string; name: string; targetObject?: string; isExcel?: boolean; pgTableName?: string };
+
+const PROTHEUS_TABLE_OPTIONS: TableOption[] = [
+    { code: 'SA1010', name: 'Clientes', targetObject: 'BusinessPartners', isExcel: false },
+    { code: 'SA2010', name: 'Fornecedores', targetObject: 'BusinessPartners', isExcel: false },
+    { code: 'SB1010', name: 'Produtos', targetObject: 'Items', isExcel: false },
+    { code: 'SE1010', name: 'Contas a Receber', targetObject: 'Orders', isExcel: false },
+    { code: 'SE2010', name: 'Contas a Pagar', targetObject: 'JournalEntries', isExcel: false },
 ];
 
-const SAP_OBJECTS: { [key: string]: string } = {
-    'SA1010': 'BusinessPartners',
-    'SA2010': 'BusinessPartners',
-    'SB1010': 'Items',
-    'SE1010': 'Orders',
-    'SE2010': 'JournalEntries'
-};
-
 const COMMON_SAP_FIELDS: { [key: string]: string[] } = {
+    'BusinessPartnerGroups': ['Code', 'Name', 'Type'],
+    'ProfitCenters': ['CenterCode', 'CenterName', 'CostCenterType', 'CenterOwner', 'Active', 'GroupCode', 'InWhichDimension', 'EffectiveFrom'],
     'BusinessPartners': [
         'CardCode', 'CardName', 'CardType', 'GroupCode', 'Phone1', 'Phone2', 'Cellular', 'EmailAddress', 'Website', 'Notes', 'FederalTaxID',
         'BPAddresses.AddressName', 'BPAddresses.Street', 'BPAddresses.StreetNo', 'BPAddresses.Block', 'BPAddresses.ZipCode', 'BPAddresses.City',
         'BPAddresses.County', 'BPAddresses.State', 'BPAddresses.Country', 'BPAddresses.AddressType', 'BPAddresses.AddrType', 'BPAddresses.TaxCode', 'BPAddresses.BuildingFloorRoom',
+        'BPAddresses.U_TX_CNAE',
         'BPFiscalTaxIDCollection.TaxId0', 'BPFiscalTaxIDCollection.TaxId1', 'BPFiscalTaxIDCollection.TaxId2', 'BPFiscalTaxIDCollection.TaxId3', 'BPFiscalTaxIDCollection.TaxId4',
         'BPFiscalTaxIDCollection.CNAECode',
         'U_TX_IE', 'U_TX_CNPJ', 'U_TX_INDFINAL', 'U_TX_INDIEDEST'
@@ -56,12 +53,41 @@ const COMMON_SAP_FIELDS: { [key: string]: string[] } = {
 
 export default function MappingPage() {
     const { config: mappings, updateTableMapping, loading: mappingLoading } = useMapping();
-    const [selectedTable, setSelectedTable] = useState<string>('SA1010');
+    const [tableOptions, setTableOptions] = useState<TableOption[]>(PROTHEUS_TABLE_OPTIONS);
+    const [selectedTableCode, setSelectedTableCode] = useState<string>('SA1010');
     const [sourceColumns, setSourceColumns] = useState<string[]>([]);
+
+    const selectedTableOpt = tableOptions.find(o => o.code === selectedTableCode) || PROTHEUS_TABLE_OPTIONS[0];
+    const rawTargetObject = selectedTableOpt.targetObject || 'Unknown';
+    const queryTableName = selectedTableOpt.isExcel ? (selectedTableOpt.pgTableName || selectedTableCode) : selectedTableCode;
+
+    // Load Excel Entities
+    useEffect(() => {
+        const fetchEntities = async () => {
+            try {
+                const res = await fetch('/api/migration/entities');
+                const json = await res.json();
+                if (json.success && json.data) {
+                    const excelOptions: TableOption[] = json.data.map((ent: any) => ({
+                        code: `EXCEL_${ent.id}`,
+                        name: ent.name,
+                        targetObject: ent.target_object,
+                        isExcel: true,
+                        pgTableName: ent.staging_table || `stg_${ent.target_object.toLowerCase()}_${ent.id}`
+                    }));
+                    setTableOptions([...PROTHEUS_TABLE_OPTIONS, ...excelOptions]);
+                }
+            } catch (e) {
+                console.error('Failed to load excel entities:', e);
+            }
+        };
+        fetchEntities();
+    }, []);
 
     // Preview State
     const [showPreview, setShowPreview] = useState(false);
     const [previewData, setPreviewData] = useState<{ source: any, target: any } | null>(null);
+    const [previewLoading, setPreviewLoading] = useState(false);
 
     // Modal State
     const [showRuleModal, setShowRuleModal] = useState(false);
@@ -81,6 +107,32 @@ export default function MappingPage() {
     // SAP Sequence State
     const [seriesCode, setSeriesCode] = useState<number | ''>('');
     const [objectType, setObjectType] = useState('');
+    const [sapSeriesList, setSapSeriesList] = useState<{ Series: number, Name: string, IsDefault: string }[]>([]);
+    const [loadingSapSeries, setLoadingSapSeries] = useState(false);
+
+    useEffect(() => {
+        if (ruleType === 'sap_sequence' && objectType) {
+            let isCurrent = true;
+            const fetchSeries = async () => {
+                setLoadingSapSeries(true);
+                try {
+                    const res = await fetch(`/api/sap/series?objectType=${objectType}`);
+                    const json = await res.json();
+                    if (isCurrent && json.success) {
+                        setSapSeriesList(json.series || []);
+                    }
+                } catch (e) {
+                    console.error('Falha ao buscar séries:', e);
+                } finally {
+                    if (isCurrent) setLoadingSapSeries(false);
+                }
+            };
+            fetchSeries();
+            return () => { isCurrent = false; };
+        } else {
+            setSapSeriesList([]);
+        }
+    }, [ruleType, objectType]);
 
     const [editingIndex, setEditingIndex] = useState<number>(-1);
 
@@ -92,9 +144,9 @@ export default function MappingPage() {
 
     // Colunas conhecidas por tabela (fallback imediato, antes do fetch)
     const KNOWN_COLS: Record<string, string[]> = {
-        sa1010: ['a1_filial', 'a1_cod', 'a1_loja', 'a1_nome', 'a1_nreduz', 'a1_cgc', 'a1_tipo', 'a1_est', 'a1_mun', 'a1_tel', 'a1_email', 'a1_end', 'sap_code'],
-        sa2010: ['a2_filial', 'a2_cod', 'a2_loja', 'a2_nome', 'a2_nreduz', 'a2_cgc', 'a2_tipo', 'a2_est', 'a2_mun', 'a2_tel', 'a2_email', 'a2_end', 'sap_code'],
-        sb1010: ['b1_filial', 'b1_cod', 'b1_desc', 'b1_tipo', 'b1_um', 'b1_grupo', 'b1_localiz', 'sap_code'],
+        sa1010: ['a1_filial', 'a1_cod', 'a1_loja', 'a1_nome', 'a1_nreduz', 'a1_cgc', 'a1_tipo', 'a1_est', 'a1_mun', 'a1_tel', 'a1_email', 'a1_end', '__sap_id'],
+        sa2010: ['a2_filial', 'a2_cod', 'a2_loja', 'a2_nome', 'a2_nreduz', 'a2_cgc', 'a2_tipo', 'a2_est', 'a2_mun', 'a2_tel', 'a2_email', 'a2_end', '__sap_id'],
+        sb1010: ['b1_filial', 'b1_cod', 'b1_desc', 'b1_tipo', 'b1_um', 'b1_grupo', 'b1_localiz', '__sap_id'],
         sed010: ['ed_filial', 'ed_codigo', 'ed_descri', 'ed_naturez', 'sap_account_code', 'sap_account_name'],
         sap_items: ['item_code', 'item_name', 'item_type', 'svc_code', 'u_svc_code', 'purchase', 'sales', 'imported_at'],
         sap_chart_of_accounts: ['code', 'name', 'account_type', 'external_code', 'currency', 'father_account', 'balance'],
@@ -107,6 +159,9 @@ export default function MappingPage() {
     // Colunas da tabela de lookup (carregadas dinamicamente)
     const [lookupTableCols, setLookupTableCols] = useState<string[]>([]);
     const [lookupTableColsLoading, setLookupTableColsLoading] = useState(false);
+
+    // Estado da busca para o Testar Preview
+    const [previewSearch, setPreviewSearch] = useState('');
 
     // Busca dinâmica das colunas — aplica fallback imediato e enriquece via API
     const fetchLookupCols = async (table: string) => {
@@ -136,13 +191,15 @@ export default function MappingPage() {
     // Fetch Source Cols on Table Select
     useEffect(() => {
         const fetchCols = async () => {
-            if (!selectedTable) return;
+            if (!queryTableName) return;
             try {
-                const res = await fetch(`/api/data?table=${selectedTable}&limit=1`);
+                const res = await fetch(`/api/data?action=columns&table=${queryTableName}`);
                 const json = await res.json();
-                if (json.success && json.data && json.data.length > 0) {
-                    setSourceColumns(Object.keys(json.data[0]));
-                } else if (json.data && json.data.length === 0) {
+                if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+                    const hiddenCols = ['id', 'd_e_l_e_t_', '__source_key', '__sap_id', '__integration_status', '__sync_message', '__last_sync', 'r_e_c_n_o_'];
+                    const cols = json.data.filter((c: string) => !hiddenCols.includes(c));
+                    setSourceColumns(cols.length > 0 ? cols : ['(Sem colunas mapeáveis)']);
+                } else {
                     setSourceColumns(['(Tabela vazia ou sem estrutura)']);
                 }
             } catch (e) {
@@ -150,36 +207,36 @@ export default function MappingPage() {
             }
         };
         fetchCols();
-    }, [selectedTable]);
+    }, [queryTableName]);
 
 
 
     const handleAddField = () => {
-        const currentMapping = mappings[selectedTable] || { sourceTable: selectedTable, targetObject: SAP_OBJECTS[selectedTable], fields: [] };
+        const currentMapping = mappings[selectedTableCode] || { sourceTable: selectedTableCode, targetObject: rawTargetObject, fields: [] };
         const newField: FieldMapping = { source: '', target: '' };
-        updateTableMapping(selectedTable, { ...currentMapping, fields: [...currentMapping.fields, newField] });
+        updateTableMapping(selectedTableCode, { ...currentMapping, fields: [...currentMapping.fields, newField] });
     };
 
     const handleRemoveField = (index: number) => {
-        const currentMapping = mappings[selectedTable];
+        const currentMapping = mappings[selectedTableCode];
         if (!currentMapping) return;
         const newFields = [...currentMapping.fields];
         newFields.splice(index, 1);
-        updateTableMapping(selectedTable, { ...currentMapping, fields: newFields });
+        updateTableMapping(selectedTableCode, { ...currentMapping, fields: newFields });
     };
 
     const handleChangeField = (index: number, key: 'source' | 'target', value: string) => {
-        const currentMapping = mappings[selectedTable];
+        const currentMapping = mappings[selectedTableCode];
         if (!currentMapping) return;
         const newFields = [...currentMapping.fields];
         newFields[index] = { ...newFields[index], [key]: value };
-        updateTableMapping(selectedTable, { ...currentMapping, fields: newFields });
+        updateTableMapping(selectedTableCode, { ...currentMapping, fields: newFields });
     };
 
     const openRuleModal = (field: FieldMapping, index: number) => {
         setCurrentField({ ...field });
         setRuleType(field.rule?.type || 'none');
-        setRuleValue(field.rule?.value || '');
+        setRuleValue(field.rule?.expression || field.rule?.value || '');
         setMapValues(field.rule?.map || []);
         setCondField(field.rule?.condition?.field || '');
         setCondValue(field.rule?.condition?.value || '');
@@ -198,7 +255,13 @@ export default function MappingPage() {
         setCkLookupKeyFields(ck?.lookupKeyFields || ['', '']);
 
         setSeriesCode(field.rule?.seriesCode ?? '');
-        setObjectType(field.rule?.objectType || '');
+        
+        let defaultObjType = field.rule?.objectType || '';
+        if (!defaultObjType) {
+            if (selectedTableCode === 'SA1010') defaultObjType = 'bp_customer';
+            else if (selectedTableCode === 'SA2010') defaultObjType = 'bp_supplier';
+        }
+        setObjectType(defaultObjType);
 
         // @ts-ignore
         setAddressPart(field.rule?.part || 'street');
@@ -207,9 +270,9 @@ export default function MappingPage() {
     };
 
     const saveRule = () => {
-        if (editingIndex === -1 || !selectedTable) return;
+        if (editingIndex === -1 || !selectedTableCode) return;
 
-        const currentMapping = mappings[selectedTable];
+        const currentMapping = mappings[selectedTableCode];
         const newFields = [...currentMapping.fields];
 
         const rule: MappingRule = { type: ruleType };
@@ -217,6 +280,8 @@ export default function MappingPage() {
             rule.value = ruleValue;
         } else if (ruleType === 'static') {
             rule.value = ruleValue;
+        } else if (ruleType === 'expression') {
+            rule.expression = ruleValue;
         } else if (ruleType === 'map') {
             rule.map = mapValues;
         } else if (ruleType === 'address_part') {
@@ -243,11 +308,11 @@ export default function MappingPage() {
             rule.condition = { field: condField, operator: 'equals', value: condValue };
         }
 
-        // Para regra 'static', source não é necessário — limpa para evitar confusão
+        // Para regra 'static' e 'expression', source não é necessário — limpa para evitar confusão
         const updatedField = { ...newFields[editingIndex], rule };
-        if (ruleType === 'static') updatedField.source = '';
+        if (ruleType === 'static' || ruleType === 'expression') updatedField.source = '';
         newFields[editingIndex] = updatedField;
-        updateTableMapping(selectedTable, { ...currentMapping, fields: newFields });
+        updateTableMapping(selectedTableCode, { ...currentMapping, fields: newFields });
         setShowRuleModal(false);
     };
 
@@ -268,15 +333,18 @@ export default function MappingPage() {
     };
 
     const handlePreview = async () => {
-        const currentMapping = mappings[selectedTable];
+        const currentMapping = mappings[selectedTableCode];
         if (!currentMapping || currentMapping.fields.length === 0) {
             alert('Configure o mapeamento antes de visualizar.');
             return;
         }
 
+        setPreviewLoading(true);
+
         try {
             // Fetch one record
-            const res = await fetch(`/api/data?table=${selectedTable}&limit=1`);
+            const url = `/api/data?table=${queryTableName}&limit=1${previewSearch ? `&search=${encodeURIComponent(previewSearch)}` : ''}`;
+            const res = await fetch(url);
             const json = await res.json();
 
             if (!json.success || !json.data || json.data.length === 0) {
@@ -291,14 +359,14 @@ export default function MappingPage() {
             currentMapping.fields.forEach(field => {
                 if (!field.target) return;
 
-                // Para tipo 'static', source não é necessário
-                const isStaticRule = field.rule?.type === 'static';
-                if (!isStaticRule && !field.source) return;
+                // Para tipo 'static', 'sap_sequence' ou 'expression', source não é obrigatório
+                const isSourceOptional = field.rule?.type === 'static' || field.rule?.type === 'sap_sequence' || field.rule?.type === 'expression';
+                if (!isSourceOptional && !field.source) return;
 
                 const originalValue = field.source ? sourceRecord[field.source] : undefined;
 
-                // Pula campos sem valor de origem APENAS para regras não-static
-                if (!isStaticRule && (originalValue === undefined || originalValue === null)) return;
+                // Pula campos sem valor de origem APENAS para regras que exigem origem
+                if (!isSourceOptional && (originalValue === undefined || originalValue === null)) return;
 
                 let finalValue: any = typeof originalValue === 'string' ? originalValue.trim() : originalValue;
 
@@ -328,6 +396,15 @@ export default function MappingPage() {
                             }
                             break;
                         }
+                        case 'expression': {
+                            if (field.rule.expression) {
+                                finalValue = field.rule.expression.replace(/\{([^}]+)\}/g, (_, key) => {
+                                    const val = sourceRecord[key] ?? sourceRecord[key.toUpperCase()] ?? sourceRecord[key.toLowerCase()];
+                                    return val !== undefined && val !== null ? String(val).trim() : '';
+                                });
+                            }
+                            break;
+                        }
                         case 'prefix':
                             finalValue = (field.rule.value || '') + originalValue;
                             break;
@@ -348,6 +425,33 @@ export default function MappingPage() {
                         }
                         case 'tax_id':
                             finalValue = TransformationUtils.formatTaxId(originalValue);
+                            break;
+                        case 'date':
+                            if (finalValue && String(finalValue).length === 8) {
+                                const s = String(finalValue);
+                                finalValue = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+                            }
+                            break;
+                        case 'date_iso':
+                            if (finalValue && typeof finalValue === 'string') {
+                                const parts = finalValue.split(/[\/\-]/);
+                                if (parts.length >= 3) {
+                                    let day, month, year;
+                                    if (parts[0].length === 4) {
+                                        year = parts[0];
+                                        month = parts[1];
+                                        day = parts[2];
+                                    } else {
+                                        day = parts[0].padStart(2, '0');
+                                        month = parts[1].padStart(2, '0');
+                                        year = parts[2];
+                                    }
+                                    finalValue = `${year}-${month}-${day}T00:00:00Z`;
+                                }
+                            }
+                            break;
+                        case 'sap_sequence':
+                            finalValue = `[Sequência SAP - Série: ${field.rule.seriesCode || 'Auto'}]`;
                             break;
                         case 'lookup':
                             // Will be handled asynchronously below
@@ -387,10 +491,12 @@ export default function MappingPage() {
         } catch (error) {
             console.error(error);
             alert('Erro ao gerar preview.');
+        } finally {
+            setPreviewLoading(false);
         }
     };
 
-    const currentMapping = mappings[selectedTable] || { sourceTable: selectedTable, targetObject: SAP_OBJECTS[selectedTable], fields: [] };
+    const currentMapping = mappings[selectedTableCode] || { sourceTable: selectedTableCode, targetObject: rawTargetObject, fields: [] };
 
     return (
         <div className="container" style={{ paddingBottom: '4rem' }}>
@@ -403,28 +509,54 @@ export default function MappingPage() {
 
                 {/* SIDEBAR: Table Selection */}
                 <div className="card" style={{ height: 'fit-content' }}>
-                    <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem' }}>Tabelas</h3>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                        {TABLE_OPTIONS.map(opt => (
+                    
+                    <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem', color: 'var(--accent)' }}>Tabelas Protheus</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.5rem' }}>
+                        {tableOptions.filter(o => !o.isExcel).map(opt => (
                             <button
                                 key={opt.code}
-                                onClick={() => setSelectedTable(opt.code)}
+                                onClick={() => setSelectedTableCode(opt.code)}
                                 style={{
                                     textAlign: 'left',
                                     padding: '0.75rem',
                                     borderRadius: '6px',
-                                    backgroundColor: selectedTable === opt.code ? 'var(--primary)' : 'transparent',
-                                    color: selectedTable === opt.code ? 'white' : 'var(--foreground)',
-                                    fontWeight: selectedTable === opt.code ? 600 : 400,
-                                    transition: 'all 0.2s'
+                                    backgroundColor: selectedTableCode === opt.code ? 'var(--primary)' : 'transparent',
+                                    color: selectedTableCode === opt.code ? 'white' : 'var(--foreground)',
+                                    fontWeight: selectedTableCode === opt.code ? 600 : 400,
+                                    transition: 'all 0.2s',
+                                    border: '1px solid transparent'
                                 }}
                             >
-                                {opt.code} <br />
-                                <span style={{ fontSize: '0.8rem', opacity: 0.8 }}>{opt.name.split(' ')[0]}</span>
+                                <strong>{opt.code}</strong> <br />
+                                <span style={{ fontSize: '0.8rem', opacity: 0.8 }}>{opt.name}</span>
                             </button>
                         ))}
                     </div>
 
+                    <h3 style={{ marginBottom: '1rem', fontSize: '1.1rem', color: 'var(--success)' }}>Planilhas (Excel)</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        {tableOptions.filter(o => o.isExcel).length === 0 ? (
+                            <p style={{ fontSize: '0.85rem', color: 'var(--secondary)' }}>Nenhuma planilha carregada.</p>
+                        ) : tableOptions.filter(o => o.isExcel).map(opt => (
+                            <button
+                                key={opt.code}
+                                onClick={() => setSelectedTableCode(opt.code)}
+                                style={{
+                                    textAlign: 'left',
+                                    padding: '0.75rem',
+                                    borderRadius: '6px',
+                                    backgroundColor: selectedTableCode === opt.code ? 'var(--primary)' : 'transparent',
+                                    color: selectedTableCode === opt.code ? 'white' : 'var(--foreground)',
+                                    fontWeight: selectedTableCode === opt.code ? 600 : 400,
+                                    transition: 'all 0.2s',
+                                    border: selectedTableCode === opt.code ? '1px solid var(--primary)' : '1px solid var(--card-border)'
+                                }}
+                            >
+                                <span style={{ fontSize: '0.9rem', display: 'block', wordBreak: 'break-word' }}>{opt.name}</span>
+                                <span style={{ fontSize: '0.75rem', opacity: 0.8, color: selectedTableCode === opt.code ? '#e2e8f0' : 'var(--success)' }}>→ {opt.targetObject}</span>
+                            </button>
+                        ))}
+                    </div>
 
                 </div>
 
@@ -432,11 +564,25 @@ export default function MappingPage() {
                 <div className="card">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                         <div>
-                            <h2 style={{ fontSize: '1.25rem' }}>{selectedTable} <ArrowRight size={16} style={{ margin: '0 0.5rem' }} /> {SAP_OBJECTS[selectedTable]}</h2>
+                            <h2 style={{ fontSize: '1.25rem' }}>
+                                {selectedTableOpt.isExcel ? selectedTableOpt.name : selectedTableCode} 
+                                <ArrowRight size={16} style={{ margin: '0 0.5rem' }} /> 
+                                <span style={{ color: 'var(--success)' }}>{rawTargetObject}</span>
+                            </h2>
                         </div>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <button className="btn btn-secondary" onClick={handlePreview}>
-                                <Play size={16} style={{ marginRight: '0.5rem' }} /> Testar Preview
+                        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <input
+                                type="text"
+                                className="input"
+                                placeholder="Filtrar (Ex: Cód, Nome, CNPJ)..."
+                                value={previewSearch}
+                                onChange={e => setPreviewSearch(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') handlePreview() }}
+                                style={{ width: '250px', padding: '0.5rem', fontSize: '0.9rem' }}
+                            />
+                            <button className="btn btn-secondary" onClick={handlePreview} disabled={previewLoading}>
+                                {previewLoading ? <Loader2 size={16} className="spinner" style={{ marginRight: '0.5rem' }} /> : <Play size={16} style={{ marginRight: '0.5rem' }} />} 
+                                {previewLoading ? 'Gerando...' : 'Testar Preview'}
                             </button>
                             <button className="btn btn-primary" onClick={handleAddField}>
                                 <Plus size={16} style={{ marginRight: '0.5rem' }} /> Adicionar Campo
@@ -463,7 +609,7 @@ export default function MappingPage() {
                                 }}>
                                     {/* Source Field */}
                                     <div>
-                                        <label className="label" style={{ marginBottom: '0.25rem' }}>Origem (Protheus)</label>
+                                        <label className="label" style={{ marginBottom: '0.25rem' }}>Origem {selectedTableOpt.isExcel ? '(Planilha)' : '(Protheus)'}</label>
                                         {field.rule?.type === 'static' ? (
                                             <div style={{
                                                 padding: '0.5rem 0.75rem',
@@ -475,6 +621,19 @@ export default function MappingPage() {
                                                 fontStyle: 'italic',
                                             }}>
                                                 📌 Valor Fixo: <strong>{field.rule.value ?? '(vazio)'}</strong>
+                                            </div>
+                                        ) : field.rule?.type === 'expression' ? (
+                                            <div style={{
+                                                padding: '0.5rem 0.75rem',
+                                                backgroundColor: 'rgba(var(--success-rgb, 16,185,129),0.12)',
+                                                border: '1px dashed var(--success)',
+                                                borderRadius: '8px',
+                                                fontSize: '0.82rem',
+                                                color: 'var(--success)',
+                                                fontStyle: 'italic',
+                                                wordBreak: 'break-all'
+                                            }}>
+                                                ƒ(x) Expressão: <strong>{field.rule.expression ?? '(vazio)'}</strong>
                                             </div>
                                         ) : (
                                             <AutocompleteInput
@@ -496,7 +655,7 @@ export default function MappingPage() {
                                         <AutocompleteInput
                                             value={field.target}
                                             onChange={(val: string) => handleChangeField(idx, 'target', val)}
-                                            options={(COMMON_SAP_FIELDS[SAP_OBJECTS[selectedTable]] || []).filter(opt =>
+                                            options={(COMMON_SAP_FIELDS[rawTargetObject] || []).filter(opt =>
                                                 // Exclude targets used in OTHER rows (allow current row's value)
                                                 !currentMapping.fields.some((f, i) => i !== idx && f.target === opt)
                                             )}
@@ -541,7 +700,9 @@ export default function MappingPage() {
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem', flex: 1, overflow: 'hidden' }}>
                             {/* Source */}
                             <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                                <h3 style={{ marginBottom: '1rem', color: 'var(--accent)' }}>Origem (Protheus/Supabase)</h3>
+                                <h3 style={{ marginBottom: '1rem', color: 'var(--accent)' }}>
+                                    {selectedTableOpt?.isExcel ? 'Origem (Planilha)' : 'Origem (Protheus/Supabase)'}
+                                </h3>
                                 <div style={{ flex: 1, overflow: 'auto', backgroundColor: '#000', padding: '1rem', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.9rem' }}>
                                     <pre>{JSON.stringify(previewData.source, null, 2)}</pre>
                                 </div>
@@ -571,13 +732,22 @@ export default function MappingPage() {
 
                         <div className="input-group">
                             <label className="label">Tipo de Regra</label>
-                            <select className="input" value={ruleType} onChange={(e) => setRuleType(e.target.value as RuleType)}>
+                            <select className="input" value={ruleType} onChange={(e) => {
+                                const newType = e.target.value as RuleType;
+                                setRuleType(newType);
+                                if (newType === 'sap_sequence' && !objectType) {
+                                    if (selectedTableCode === 'SA1010') setObjectType('bp_customer');
+                                    else if (selectedTableCode === 'SA2010') setObjectType('bp_supplier');
+                                }
+                            }}>
                                 <option value="none">Nenhuma (Cópia Direta)</option>
                                 <option value="static">Valor Fixo (static — literal)</option>
+                                <option value="expression">Expressão com Templates (ex: {'{campo1}/{campo2}'})</option>
                                 <option value="prefix">Adicionar Prefixo</option>
                                 <option value="suffix">Adicionar Sufixo</option>
                                 <option value="map">Mapeamento de Valores (De/Para)</option>
                                 <option value="date">Converter Data YYYYMMDD → ISO</option>
+                                <option value="date_iso">Converter Data DD/MM/YYYY → ISO</option>
                                 <option value="address_part">Análise de Endereço (Extração)</option>
                                 <option value="tax_id">Análise de CGC (Formatação)</option>
                                 <optgroup label="Lookup (busca em outra tabela)">
@@ -606,6 +776,21 @@ export default function MappingPage() {
                                 />
                                 <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
                                     Este valor será enviado <strong>literalmente</strong> para o campo SAP, independente do valor de origem.
+                                </p>
+                            </div>
+                        )}
+
+                        {ruleType === 'expression' && (
+                            <div className="input-group">
+                                <label className="label">Template da Expressão</label>
+                                <input
+                                    className="input"
+                                    value={ruleValue}
+                                    onChange={e => setRuleValue(e.target.value)}
+                                    placeholder="Ex: {e1_num}/{e1_titulo}"
+                                />
+                                <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
+                                    Escreva o texto combinando campos da origem entre chaves <strong>{'{campo}'}</strong>. <br />Exemplo: <code>{'{e1_num}/{e1_titulo}'}</code> virá <code>000101/AB</code>.
                                 </p>
                             </div>
                         )}
@@ -868,13 +1053,19 @@ export default function MappingPage() {
 
                                     <div>
                                         <label className="label" style={{ fontSize: '0.85rem' }}>Código da Série (Opcional)</label>
-                                        <input
+                                        <select
                                             className="input"
-                                            type="number"
-                                            value={seriesCode}
+                                            value={seriesCode === '' ? '' : seriesCode}
                                             onChange={e => setSeriesCode(e.target.value === '' ? '' : Number(e.target.value))}
-                                            placeholder="Deixe em branco para usar a série padrão"
-                                        />
+                                            disabled={loadingSapSeries}
+                                        >
+                                            <option value="">{loadingSapSeries ? 'Carregando séries do SAP...' : 'Padrão do SAP (Auto)'}</option>
+                                            {sapSeriesList.map(s => (
+                                                <option key={s.Series} value={s.Series}>
+                                                    {s.Name} (Série {s.Series}){s.IsDefault === 'tYES' ? ' - PADRÃO' : ''}
+                                                </option>
+                                            ))}
+                                        </select>
                                         <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
                                             Código numérico da série no SAP (campo <code>Series</code>). Se vazio, utiliza a série padrão do objeto.
                                         </p>

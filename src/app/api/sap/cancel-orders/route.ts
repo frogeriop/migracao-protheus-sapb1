@@ -123,7 +123,7 @@ async function fetchAllOpenOrderDocEntries(
  * Body: {
  *   cancelAll?: boolean         // Busca e cancela TODOS os Orders abertos
  *   docEntries?: number[]       // OU lista específica de DocEntry
- *   clearWriteback?: boolean    // Zera sap_jdt_num no Supabase (default: true)
+ *   clearWriteback?: boolean    // Zera __sap_id no Supabase (default: true)
  *   sourceTable?: string        // Tabela Supabase (default: 'se1010')
  * }
  *
@@ -244,12 +244,12 @@ export async function POST(request: Request) {
                 // ── Write-back ────────────────────────────────────────────────
                 let writebackCleared = 0;
                 if (clearWriteback && cancelled > 0) {
-                    send({ type: 'writeback', message: `🔄 Zerando sap_jdt_num em ${sourceTable}...` });
+                    send({ type: 'writeback', message: `🔄 Zerando __sap_id em ${sourceTable}...` });
                     const supabase = createClient(config.supabase.url, config.supabase.key, { auth: { persistSession: false } });
 
                     const { error, count } = cancelAll
-                        ? await supabase.from(sourceTable).update({ sap_jdt_num: null }).not('sap_jdt_num', 'is', null)
-                        : await supabase.from(sourceTable).update({ sap_jdt_num: null }).in('sap_jdt_num', docEntries);
+                        ? await supabase.from(sourceTable).update({ __sap_id: null }).not('__sap_id', 'is', null)
+                        : await supabase.from(sourceTable).update({ __sap_id: null }).in('__sap_id', docEntries);
 
                     if (error) {
                         send({ type: 'writeback', message: `⚠ Write-back falhou: ${error.message}` });

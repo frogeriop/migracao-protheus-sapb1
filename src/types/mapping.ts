@@ -9,7 +9,9 @@ export type RuleType =
     | 'lookup_composite'   // NEW: lookup com chave composta (ex: cod+loja)
     | 'sap_sequence'
     | 'date'
+    | 'date_iso'
     | 'concat'
+    | 'expression'         // NEW: expressão com templates (e.g. {e1_num}/{e1_titulo})
     | 'static';            // NEW: valor fixo (literal), ignorando source
 
 export interface ValueMap {
@@ -38,6 +40,7 @@ export interface CompositeKey {
 export interface MappingRule {
     type: RuleType;
     value?: string;            // prefix/suffix/static: valor literal
+    expression?: string;       // expression: template string (ex: {e1_num}/{e1_titulo})
     map?: ValueMap[];          // map: de/para
     part?: 'street' | 'number' | 'complement' | 'type'; // address_part
     lookupTable?: string;      // lookup/lookup_composite: tabela Supabase

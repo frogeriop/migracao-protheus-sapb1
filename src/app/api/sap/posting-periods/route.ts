@@ -49,17 +49,17 @@ async function fetchPostingPeriods(serviceLayerUrl: string, cookieStr: string): 
     // Pagina os resultados
     const all: any[] = [];
     let skip = 0;
-    const PAGE = 50;
 
     while (true) {
         const res = await axios.get<{ value: any[] }>(
-            `${serviceLayerUrl}/SQLQueries('${SQL_CODE}')/List?$top=${PAGE}&$skip=${skip}`,
+            `${serviceLayerUrl}/SQLQueries('${SQL_CODE}')/List?$skip=${skip}`,
             { httpsAgent, headers: { Cookie: cookieStr } }
         );
         const rows = res.data?.value ?? [];
+        if (rows.length === 0) break;
+        
         all.push(...rows);
-        if (rows.length < PAGE) break;
-        skip += PAGE;
+        skip += rows.length;
     }
 
     // Remove query temporária

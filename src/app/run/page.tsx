@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Layers, Play, AlertCircle, ArrowRight, CheckCircle, XCircle, Loader2, Minimize2, Maximize2, Building2 } from 'lucide-react';
 import { useConfig } from '@/hooks/useConfig';
 import { useMapping } from '@/hooks/useMapping';
@@ -12,7 +12,7 @@ interface PreviewItem {
     existsInSap: boolean;
     action: 'insert' | 'update';
     matchMethod?: 'card_code' | 'tax_id' | 'none';
-    status?: 'pending' | 'success' | 'error';
+    status?: 'pending' | 'loading' | 'success' | 'error';
     message?: string;
 }
 
@@ -26,6 +26,12 @@ interface SapBranch {
     isMain: boolean;
 }
 
+interface ExcelFilter {
+    field: string;
+    operator: 'contains' | 'equals' | 'starts_with';
+    value: string;
+}
+
 const TABLE_OPTIONS = [
     { code: 'SA1010', name: 'Clientes (BusinessPartners)' },
     { code: 'SA2010', name: 'Fornecedores (BusinessPartners)' },
@@ -37,20 +43,53 @@ const TABLE_OPTIONS = [
 export default function RunMigrationPage() {
     const { config } = useConfig();
     const [selectedTable, setSelectedTable] = useState('SA1010');
+    const [dataSource, setDataSource] = useState<'protheus' | 'excel'>('protheus');
     const [step, setStep] = useState<'select' | 'preview' | 'executing' | 'done'>('select');
     const [limit, setLimit] = useState(50);
     const [offset, setOffset] = useState(0);
 
+    const [stagingTable, setStagingTable] = useState<string>('');
+
     // Preview Data
     const [previewList, setPreviewList] = useState<PreviewItem[]>([]);
     const [loadingPreview, setLoadingPreview] = useState(false);
+    const [loadingMessage, setLoadingMessage] = useState('Processando...');
     const [totalSourceRows, setTotalSourceRows] = useState(0);
     const [periodFilterWarning, setPeriodFilterWarning] = useState<string | null>(null);
+
+    useEffect(() => {
+        let interval: NodeJS.Timeout;
+        if (loadingPreview) {
+            const messages = [
+                'Buscando dados de origem...',
+                'Processando mapeamentos...',
+                'Verificando duplicatas no SAP via Service Layer...',
+                'Quase pronto...',
+            ];
+            let idx = 0;
+            setLoadingMessage(messages[0]);
+            interval = setInterval(() => {
+                idx = (idx + 1) % messages.length;
+                setLoadingMessage(messages[idx]);
+            }, 3500);
+        }
+        return () => {
+            if (interval) clearInterval(interval);
+        };
+    }, [loadingPreview]);
 
     // Execution
     const [progress, setProgress] = useState({ current: 0, total: 0, success: 0, error: 0 });
     const [expandedRow, setExpandedRow] = useState<number | null>(null);
     const [duplicateAddress, setDuplicateAddress] = useState(false);
+
+    const interruptRef = useRef(false);
+    const [isInterrupting, setIsInterrupting] = useState(false);
+
+    const handleInterrupt = () => {
+        interruptRef.current = true;
+        setIsInterrupting(true);
+    };
 
     // ── Filial (Branch) ──────────────────────────────────────────────────────
     const [branches, setBranches] = useState<SapBranch[]>([]);
@@ -77,11 +116,59 @@ export default function RunMigrationPage() {
     const [filterLoja, setFilterLoja] = useState(''); // a1_loja / a2_loja
     const [filterCgc, setFilterCgc] = useState(''); // a1_cgc / a2_cgc (CNPJ/CPF)
     const [filterGrupo, setFilterGrupo] = useState(''); // b1_grupo (SB1010)
-    const [filterSapCode, setFilterSapCode] = useState(''); // valor específico de sap_jdt_num / sap_code
+    const [filterSapCode, setFilterSapCode] = useState(''); // valor específico de __sap_id / __sap_id
     const [filterSapStatus, setFilterSapStatus] = useState(''); // '' | 'null' | 'notnull'
     const [syncingSapCodes, setSyncingSapCodes] = useState(false);
 
-    // Sincroniza sap_code do Supabase com os códigos do SAP B1
+    // Migration Entities
+    const [entities, setEntities] = useState<any[]>([]);
+    const [selectedEntityId, setSelectedEntityId] = useState<string>('');
+    const [excelColumns, setExcelColumns] = useState<string[]>([]);
+    const [excelFilters, setExcelFilters] = useState<ExcelFilter[]>([{ field: '', operator: 'equals', value: '' }]);
+
+    // Busca entidades de migração do banco
+    const fetchEntities = async () => {
+        try {
+            const res = await fetch('/api/migration/entities');
+            const json = await res.json();
+            if (json.success && json.data) {
+                // Para a rotina de execução, queremos apenas entidades configuradas (com target_object)
+                const configured = json.data.filter((e: any) => e.target_object && e.staging_table);
+                setEntities(configured);
+            }
+        } catch (e) {
+            console.error('Erro ao buscar entidades:', e);
+        }
+    };
+
+    useEffect(() => {
+        fetchEntities();
+    }, []);
+
+    useEffect(() => {
+        const loadExcelColumns = async () => {
+            if (dataSource !== 'excel' || !stagingTable) {
+                setExcelColumns([]);
+                return;
+            }
+            try {
+                const params = new URLSearchParams({ table: stagingTable, action: 'columns' });
+                const res = await fetch(`/api/data?${params.toString()}`);
+                const json = await res.json();
+                if (json.success && Array.isArray(json.data)) {
+                    setExcelColumns(json.data);
+                } else {
+                    setExcelColumns([]);
+                }
+            } catch (err) {
+                console.error('Erro ao carregar colunas da staging:', err);
+                setExcelColumns([]);
+            }
+        };
+        loadExcelColumns();
+    }, [dataSource, stagingTable]);
+
+    // Sincroniza __sap_id do Supabase com os códigos do SAP B1
     const syncSapCodes = async () => {
         if (!['SA1010', 'SA2010', 'SB1010'].includes(selectedTable)) return;
         setSyncingSapCodes(true);
@@ -120,6 +207,7 @@ export default function RunMigrationPage() {
         setFilterLoja(''); setFilterCgc(''); setFilterGrupo('');
         setFilterSapCode(''); setFilterSapStatus('');
         setPeriodFilterWarning(null);
+        setExcelFilters([{ field: '', operator: 'equals', value: '' }]);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedTable]);
 
@@ -146,11 +234,22 @@ export default function RunMigrationPage() {
         }
     };
 
+
+
     const fetchPreview = async () => {
         setLoadingPreview(true);
         setPreviewList([]);
         try {
-            const body: any = { table: selectedTable, limit, offset, duplicateAddress };
+            // Se a carga for via Excel, usamos a tabela dinâmica retornada no upload
+            const sourceTable = dataSource === 'excel' ? stagingTable : selectedTable;
+            const body: any = { 
+                table: selectedTable, 
+                sourceTable, 
+                limit, 
+                offset, 
+                duplicateAddress,
+                entityId: dataSource === 'excel' ? selectedEntityId : undefined
+            };
             // Envia bplId apenas para SE2010
             if (selectedTable === 'SE2010' && selectedBplId) {
                 body.bplId = Number(selectedBplId);
@@ -191,6 +290,14 @@ export default function RunMigrationPage() {
                 if (filterSapStatus) filters.sapStatus = filterSapStatus;
                 if (Object.keys(filters).length > 0) body.filters = filters;
             }
+            if (dataSource === 'excel') {
+                const validExcelFilters = excelFilters
+                    .map(f => ({ ...f, value: f.value.trim() }))
+                    .filter(f => f.field && f.value);
+                if (validExcelFilters.length > 0) {
+                    body.excelFilters = validExcelFilters;
+                }
+            }
 
             const res = await fetch('/api/migration/preview', {
                 method: 'POST',
@@ -218,6 +325,8 @@ export default function RunMigrationPage() {
 
         setStep('executing');
         setProgress({ current: 0, total: previewList.length, success: 0, error: 0 });
+        interruptRef.current = false;
+        setIsInterrupting(false);
 
         let successCount = 0;
         let errorCount = 0;
@@ -225,16 +334,35 @@ export default function RunMigrationPage() {
         const newList = [...previewList];
 
         for (let i = 0; i < newList.length; i++) {
+            if (interruptRef.current) {
+                console.log('Execution interrupted by user.');
+                break;
+            }
+
             const item = newList[i];
 
+            // ── Mark as Loading & Yield Paint ──
+            newList[i].status = 'loading';
+            setPreviewList([...newList]);
+            
+            // Auto-scroll to the row
+            const rowElem = document.getElementById(`preview-row-${i}`);
+            if (rowElem) {
+                rowElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            
+            // tiny delay to ensure React renders the loading icon before fetch blocks
+            await new Promise(r => setTimeout(r, 50));
+
             const tableCode = selectedTable;
-            const mappingTarget = (
-                tableCode.startsWith('SA') ? 'BusinessPartners' :
-                    tableCode.startsWith('SB') ? 'Items' :
-                        tableCode === 'SE1010' ? 'Orders' :
-                            tableCode === 'SE2010' ? 'JournalEntries' :
-                                'PurchaseInvoices'
-            );
+            let mappingTarget = tableCode; // default (useful for Excel where selectedTable is already target_object)
+            if (dataSource === 'protheus') {
+                if (tableCode.startsWith('SA')) mappingTarget = 'BusinessPartners';
+                else if (tableCode.startsWith('SB')) mappingTarget = 'Items';
+                else if (tableCode === 'SE1010') mappingTarget = 'Orders';
+                else if (tableCode === 'SE2010') mappingTarget = 'JournalEntries';
+                else mappingTarget = 'PurchaseInvoices';
+            }
 
             try {
                 const sourcePk: string | undefined = (
@@ -243,6 +371,9 @@ export default function RunMigrationPage() {
                             selectedTable === 'SB1010' ? item.source?.b1_cod :
                                 undefined
                 )?.toString().trim();
+
+                const sourceRowId: string | undefined = 
+                    dataSource === 'excel' ? (item.source?.__source_key || item.source?.id?.toString()) : undefined;
 
                 // SE2010 e SE1010: envia o r_e_c_n_o_ para write-back (JdtNum / DocEntry)
                 const sourceRecno: number | undefined =
@@ -254,12 +385,13 @@ export default function RunMigrationPage() {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        table: selectedTable,
+                        table: dataSource === 'excel' ? stagingTable : selectedTable,
                         targetObject: mappingTarget,
                         payload: item.target,
                         action: item.action,
                         source_pk: sourcePk,
-                        source_recno: sourceRecno
+                        source_recno: sourceRecno,
+                        source_row_id: sourceRowId
                     })
                 });
 
@@ -301,6 +433,7 @@ export default function RunMigrationPage() {
         }
 
         setStep('done');
+        setIsInterrupting(false);
     };
 
     const toggleRow = (idx: number) => {
@@ -311,7 +444,8 @@ export default function RunMigrationPage() {
     const getStatusIcon = (status?: string) => {
         if (status === 'success') return <CheckCircle size={18} color="var(--success)" />;
         if (status === 'error') return <XCircle size={18} color="var(--error)" />;
-        if (step === 'executing') return <Loader2 size={18} className="animate-spin" />;
+        if (status === 'loading') return <Loader2 size={18} className="animate-spin" color="var(--accent)" />;
+        if (step === 'executing' && !status) return <div style={{ width: 18, height: 18, borderRadius: '50%', border: '1px solid var(--secondary)', opacity: 0.3 }} />;
         return <div style={{ width: 18, height: 18, borderRadius: '50%', border: '1px solid var(--secondary)' }} />;
     };
 
@@ -320,21 +454,88 @@ export default function RunMigrationPage() {
 
     return (
         <div className="container" style={{ maxWidth: '1200px' }}>
-            <h1 className="page-title">Executar Migração / Integração</h1>
+            <h1 className="page-title">Migração de Dados</h1>
 
             {/* STEP 1: SELECT */}
             {step === 'select' && (
                 <div className="card">
-                    <h2 style={{ marginBottom: '1.5rem' }}>1. Selecione a Tabela de Origem</h2>
+                    <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid var(--card-border)' }}>
+                        <button
+                            onClick={() => setDataSource('protheus')}
+                            style={{
+                                padding: '0.75rem 1.5rem',
+                                background: 'none',
+                                border: 'none',
+                                borderBottom: dataSource === 'protheus' ? '2px solid var(--accent)' : 'none',
+                                color: dataSource === 'protheus' ? 'var(--accent)' : 'var(--secondary)',
+                                fontWeight: 600,
+                                cursor: 'pointer'
+                            }}
+                        >
+                            Origem: Protheus (Direct SQL)
+                        </button>
+                        <button
+                            onClick={() => setDataSource('excel')}
+                            style={{
+                                padding: '0.75rem 1.5rem',
+                                background: 'none',
+                                border: 'none',
+                                borderBottom: dataSource === 'excel' ? '2px solid var(--accent)' : 'none',
+                                color: dataSource === 'excel' ? 'var(--accent)' : 'var(--secondary)',
+                                fontWeight: 600,
+                                cursor: 'pointer'
+                            }}
+                        >
+                            Origem: Planilha Excel
+                        </button>
+                    </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1rem', maxWidth: '400px' }}>
+                    <h2 style={{ marginBottom: '1.5rem', color: 'var(--foreground)', fontSize: '1.1rem' }}>
+                        1. {dataSource === 'protheus' ? 'Selecione a Tabela/Objeto (PROTHEUS)' : 'Selecione a Tabela/Objeto (PLANILHAS)'}
+                    </h2>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '1.5rem', maxWidth: '500px' }}>
+
+
                         <div className="input-group">
-                            <label className="label">Tabela / Objeto</label>
-                            <select className="input" value={selectedTable} onChange={e => setSelectedTable(e.target.value)}>
-                                {TABLE_OPTIONS.map(opt => (
-                                    <option key={opt.code} value={opt.code}>{opt.code} - {opt.name}</option>
-                                ))}
-                            </select>
+                            {dataSource === 'excel' ? (
+                                <>
+                                    <label className="label">Planilha / Tabela de Staging</label>
+                                    <select 
+                                        className="input" 
+                                        value={selectedEntityId} 
+                                        onChange={e => {
+                                            const id = e.target.value;
+                                            setSelectedEntityId(id);
+                                            const entity = entities.find(ent => ent.id === id);
+                                            if (entity) {
+                                                setStagingTable(entity.staging_table);
+                                                setSelectedTable(entity.target_object);
+                                            } else {
+                                                setStagingTable('');
+                                            }
+                                            setExcelFilters([{ field: '', operator: 'equals', value: '' }]);
+                                        }}
+                                    >
+                                        <option value="">— Selecione a Planilha —</option>
+                                        {entities.map(ent => (
+                                            <option key={ent.id} value={ent.id}>
+                                                {ent.name} (Destino: {ent.target_object})
+                                            </option>
+                                        ))}
+                                    </select>
+                                </>
+                            ) : (
+                                <>
+                                    <label className="label">Tabela / Objeto SAP (Protheus)</label>
+                                    <select className="input" value={selectedTable} onChange={e => setSelectedTable(e.target.value)}>
+                                        {TABLE_OPTIONS.map(opt => (
+                                            <option key={opt.code} value={opt.code}>{opt.code} - {opt.name}</option>
+                                        ))}
+                                    </select>
+                                </>
+                            )}
+
                         </div>
 
                         <div className="input-group">
@@ -348,7 +549,105 @@ export default function RunMigrationPage() {
                             <input type="number" className="input" value={offset} onChange={e => setOffset(Number(e.target.value))} />
                         </div>
 
-                        {(selectedTable === 'SA1010' || selectedTable === 'SA2010') && (
+                        {dataSource === 'excel' && (
+                            <div style={{
+                                marginTop: '0.5rem',
+                                padding: '1rem',
+                                borderRadius: '8px',
+                                border: '1px solid rgba(16,185,129,0.35)',
+                                backgroundColor: 'rgba(16,185,129,0.06)',
+                            }}>
+                                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#34d399', marginBottom: '0.75rem', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                                    🔎 Filtros por Campo da Planilha
+                                </div>
+
+                                {excelColumns.length === 0 ? (
+                                    <small style={{ color: 'var(--secondary)' }}>
+                                        Selecione uma planilha para carregar os campos disponíveis.
+                                    </small>
+                                ) : (
+                                    <>
+                                        <div style={{ display: 'grid', gap: '0.5rem' }}>
+                                            {excelFilters.map((filter, idx) => (
+                                                <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1.3fr auto', gap: '0.45rem', alignItems: 'center' }}>
+                                                    <select
+                                                        className="input"
+                                                        style={{ padding: '0.4rem 0.55rem', fontSize: '0.82rem' }}
+                                                        value={filter.field}
+                                                        onChange={e => {
+                                                            const next = [...excelFilters];
+                                                            next[idx] = { ...next[idx], field: e.target.value };
+                                                            setExcelFilters(next);
+                                                        }}
+                                                    >
+                                                        <option value="">Campo</option>
+                                                        {excelColumns.map(col => (
+                                                            <option key={col} value={col}>{col}</option>
+                                                        ))}
+                                                    </select>
+                                                    <select
+                                                        className="input"
+                                                        style={{ padding: '0.4rem 0.55rem', fontSize: '0.82rem' }}
+                                                        value={filter.operator}
+                                                        onChange={e => {
+                                                            const next = [...excelFilters];
+                                                            next[idx] = { ...next[idx], operator: e.target.value as ExcelFilter['operator'] };
+                                                            setExcelFilters(next);
+                                                        }}
+                                                    >
+                                                        <option value="equals">igual a</option>
+                                                        <option value="contains">contém</option>
+                                                        <option value="starts_with">começa com</option>
+                                                    </select>
+                                                    <input
+                                                        className="input"
+                                                        style={{ padding: '0.4rem 0.55rem', fontSize: '0.82rem' }}
+                                                        placeholder="Valor"
+                                                        value={filter.value}
+                                                        onChange={e => {
+                                                            const next = [...excelFilters];
+                                                            next[idx] = { ...next[idx], value: e.target.value };
+                                                            setExcelFilters(next);
+                                                        }}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (excelFilters.length === 1) {
+                                                                setExcelFilters([{ field: '', operator: 'equals', value: '' }]);
+                                                                return;
+                                                            }
+                                                            setExcelFilters(excelFilters.filter((_, i) => i !== idx));
+                                                        }}
+                                                        style={{ padding: '0.35rem 0.55rem', borderRadius: 6, border: '1px solid var(--card-border)', background: 'none', color: 'var(--secondary)', cursor: 'pointer', fontSize: '0.78rem' }}
+                                                    >
+                                                        Remover
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '0.55rem', marginTop: '0.6rem' }}>
+                                            <button
+                                                type="button"
+                                                onClick={() => setExcelFilters([...excelFilters, { field: '', operator: 'equals', value: '' }])}
+                                                style={{ padding: '0.35rem 0.7rem', borderRadius: 6, border: '1px solid rgba(16,185,129,0.5)', background: 'none', color: '#34d399', cursor: 'pointer', fontSize: '0.78rem' }}
+                                            >
+                                                + Adicionar filtro
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setExcelFilters([{ field: '', operator: 'equals', value: '' }])}
+                                                style={{ padding: '0.35rem 0.7rem', borderRadius: 6, border: '1px solid var(--card-border)', background: 'none', color: 'var(--secondary)', cursor: 'pointer', fontSize: '0.78rem' }}
+                                            >
+                                                Limpar filtros
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
+
+                        {dataSource === 'protheus' && (selectedTable === 'SA1010' || selectedTable === 'SA2010') && (
                             <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
                                 <input
                                     type="checkbox"
@@ -364,7 +663,7 @@ export default function RunMigrationPage() {
                         )}
 
                         {/* ── Seletor de Filial (apenas SE2010) ── */}
-                        {selectedTable === 'SE2010' && (
+                        {dataSource === 'protheus' && selectedTable === 'SE2010' && (
                             <div className="input-group">
                                 <label className="label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                                     <Building2 size={14} />
@@ -410,7 +709,7 @@ export default function RunMigrationPage() {
                         )}
 
                         {/* ── Filtros SE2010 / SE1010 ── */}
-                        {(selectedTable === 'SE2010' || selectedTable === 'SE1010') && (
+                        {dataSource === 'protheus' && (selectedTable === 'SE2010' || selectedTable === 'SE1010') && (
                             <div style={{
                                 marginTop: '0.5rem',
                                 padding: '1rem',
@@ -557,7 +856,7 @@ export default function RunMigrationPage() {
                                     </div>
                                 </div>
 
-                                {/* Status SAP (sap_jdt_num) — painel movimentos */}
+                                {/* Status SAP (__sap_id) — painel movimentos */}
                                 <div className="input-group" style={{ margin: '0.6rem 0 0' }}>
                                     <label className="label" style={{ fontSize: '0.75rem' }}>🔗 Status de Integração SAP</label>
                                     <select
@@ -622,7 +921,7 @@ export default function RunMigrationPage() {
                         )}
 
                         {/* ── Filtros SA1010 / SA2010 / SB1010 ── */}
-                        {(['SA1010', 'SA2010', 'SB1010'] as string[]).includes(selectedTable) && (
+                        {dataSource === 'protheus' && (['SA1010', 'SA2010', 'SB1010'] as string[]).includes(selectedTable) && (
                             <div style={{
                                 marginTop: '0.5rem', padding: '1rem', borderRadius: '8px',
                                 border: '1px solid rgba(99,102,241,0.25)', backgroundColor: 'rgba(99,102,241,0.05)',
@@ -713,7 +1012,7 @@ export default function RunMigrationPage() {
                                     )}
                                 </div>
 
-                                {/* Status SAP (sap_code) — painel cadastros */}
+                                {/* Status SAP (__sap_id) — painel cadastros */}
                                 <div className="input-group" style={{ margin: '0.6rem 0 0' }}>
                                     <label className="label" style={{ fontSize: '0.75rem' }}>🔗 Status de Integração SAP</label>
                                     <select
@@ -723,8 +1022,8 @@ export default function RunMigrationPage() {
                                         onChange={e => { setFilterSapStatus(e.target.value); if (e.target.value !== '') setFilterSapCode(''); }}
                                     >
                                         <option value="">Todos os registros</option>
-                                        <option value="null">❌ Não integrados (sap_code vazio)</option>
-                                        <option value="notnull">✅ Já integrados (sap_code preenchido)</option>
+                                        <option value="null">❌ Não integrados (__sap_id vazio)</option>
+                                        <option value="notnull">✅ Já integrados (__sap_id preenchido)</option>
                                     </select>
                                     {filterSapStatus === '' && (
                                         <input className="input" style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', marginTop: '0.35rem' }}
@@ -742,7 +1041,7 @@ export default function RunMigrationPage() {
                                             color: 'var(--accent)', cursor: syncingSapCodes ? 'wait' : 'pointer',
                                         }}
                                     >
-                                        {syncingSapCodes ? '⏳ Sincronizando...' : '🔄 Ressincronizar sap_code com SAP'}
+                                        {syncingSapCodes ? '⏳ Sincronizando...' : '🔄 Ressincronizar __sap_id com SAP'}
                                     </button>
                                     <small style={{ color: 'var(--secondary)', fontSize: '0.7rem' }}>
                                         Use após reimportar tabela do TOTVS para repopular os códigos SAP já integrados.
@@ -785,11 +1084,20 @@ export default function RunMigrationPage() {
                         <button
                             className="btn btn-primary"
                             onClick={fetchPreview}
-                            disabled={loadingPreview || (selectedTable === 'SE2010' && loadingBranches)}
+                            disabled={loadingPreview || (selectedTable === 'SE2010' && loadingBranches) || (dataSource === 'excel' && !stagingTable)}
                             style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
                         >
-                            {loadingPreview ? <Loader2 className="animate-spin" /> : <Play size={18} />}
-                            Gerar Preview
+                            {loadingPreview ? (
+                                <>
+                                    <Loader2 className="animate-spin" />
+                                    {loadingMessage}
+                                </>
+                            ) : (
+                                <>
+                                    <Play size={18} />
+                                    Gerar Preview
+                                </>
+                            )}
                         </button>
                     </div>
                 </div>
@@ -828,13 +1136,37 @@ export default function RunMigrationPage() {
                         )}
 
                         {(step === 'executing' || step === 'done') && (
-                            <div style={{ textAlign: 'right' }}>
-                                <div style={{ fontSize: '1.25rem', fontWeight: 600 }}>
-                                    {progress.current} / {progress.total}
-                                </div>
-                                <div style={{ fontSize: '0.85rem', color: 'var(--secondary)' }}>
-                                    <span style={{ color: 'var(--success)' }}>{progress.success} Sucessos</span> •
-                                    <span style={{ color: 'var(--error)', marginLeft: '4px' }}>{progress.error} Erros</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', textAlign: 'right' }}>
+                                {step === 'executing' && (
+                                    <button 
+                                        type="button" 
+                                        style={{
+                                            display: 'flex', 
+                                            alignItems: 'center', 
+                                            gap: '0.5rem', 
+                                            padding: '0.5rem 1rem', 
+                                            borderRadius: '6px', 
+                                            border: 'none', 
+                                            background: isInterrupting ? 'var(--secondary)' : '#ef4444', 
+                                            color: '#fff', 
+                                            cursor: isInterrupting ? 'wait' : 'pointer',
+                                            fontWeight: 600
+                                        }}
+                                        onClick={handleInterrupt} 
+                                        disabled={isInterrupting}
+                                    >
+                                        <AlertCircle size={16} />
+                                        {isInterrupting ? 'Interrompendo...' : 'Interromper'}
+                                    </button>
+                                )}
+                                <div>
+                                    <div style={{ fontSize: '1.25rem', fontWeight: 600 }}>
+                                        {progress.current} / {progress.total}
+                                    </div>
+                                    <div style={{ fontSize: '0.85rem', color: 'var(--secondary)' }}>
+                                        <span style={{ color: 'var(--success)' }}>{progress.success} Sucessos</span> •
+                                        <span style={{ color: 'var(--error)', marginLeft: '4px' }}>{progress.error} Erros</span>
+                                    </div>
                                 </div>
                             </div>
                         )}
@@ -880,7 +1212,7 @@ export default function RunMigrationPage() {
                             <tbody>
                                 {previewList.map((row, idx) => (
                                     <React.Fragment key={idx}>
-                                        <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
+                                        <tr id={`preview-row-${idx}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
                                             <td style={{ padding: '0.75rem', textAlign: 'center' }}>
                                                 {row.status ? getStatusIcon(row.status) : (
                                                     <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--secondary)', display: 'inline-block', opacity: 0.3 }}></span>
@@ -903,7 +1235,21 @@ export default function RunMigrationPage() {
                                                             row.source?.e1_parcela,
                                                             row.source?.e1_tipo
                                                         ].filter(Boolean).map((v: string) => v.trim()).filter(Boolean).join('/')
-                                                        : row.source?.a1_cod || row.source?.a2_cod || row.source?.b1_cod || '---'
+                                                        : ['SA1010', 'SA2010', 'SB1010'].includes(selectedTable) 
+                                                            ? (row.source?.a1_cod || row.source?.a2_cod || row.source?.b1_cod || '---')
+                                                            : (
+                                                                <div style={{ display: 'grid', gridTemplateColumns: 'min-content 1fr', gap: '2px 8px', fontSize: '0.75rem', marginTop: '4px' }}>
+                                                                    {Object.entries(row.source || {})
+                                                                        .filter(([k]) => !k.startsWith('__') && k !== 'd_e_l_e_t_' && k !== 'id')
+                                                                        .slice(0, 4)
+                                                                        .map(([k, v]) => (
+                                                                            <React.Fragment key={k}>
+                                                                                <span style={{ color: 'var(--secondary)', textAlign: 'right' }}>{k}:</span>
+                                                                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '180px' }}>{String(v)}</span>
+                                                                            </React.Fragment>
+                                                                        ))}
+                                                                </div>
+                                                            )
                                                 }
                                                 <br />
                                                 {selectedTable === 'SE2010' && (
@@ -937,6 +1283,11 @@ export default function RunMigrationPage() {
                                                 {selectedTable !== 'SE2010' && selectedTable !== 'SE1010' && (
                                                     <small style={{ opacity: 0.6 }}>
                                                         {row.source?.a1_nome || row.source?.a2_nome || row.source?.b1_desc || ''}
+                                                        {!['SA1010', 'SA2010', 'SB1010'].includes(selectedTable) && (
+                                                            <div style={{ marginTop: '2px' }}>
+                                                                Expandir para ver chaves e valores completos
+                                                            </div>
+                                                        )}
                                                     </small>
                                                 )}
                                             </td>
@@ -956,7 +1307,7 @@ export default function RunMigrationPage() {
                                                             )}
                                                         </>
                                                     )
-                                                    : row.target?.CardCode || row.target?.ItemCode || row.target?.DocNum || '---'
+                                                    : row.target?.CardCode || row.target?.ItemCode || row.target?.DocNum || row.target?.Code || row.target?.AcctCode || '---'
                                                 }
                                                 {row.matchMethod === 'tax_id' && (
                                                     <div style={{ fontSize: '0.72rem', color: 'var(--secondary)', marginTop: '2px' }}>
@@ -989,6 +1340,17 @@ export default function RunMigrationPage() {
                                                             : 'ATUALIZAÇÃO'
                                                     }
                                                 </span>
+                                                <div style={{ fontSize: '0.65rem', marginTop: '4px', opacity: 0.7, color: 'var(--accent)', fontFamily: 'monospace' }}>
+                                                    /b1s/v1/{
+                                                        dataSource === 'protheus' ? (
+                                                            selectedTable.startsWith('SA') ? 'BusinessPartners' :
+                                                                selectedTable.startsWith('SB') ? 'Items' :
+                                                                    selectedTable === 'SE1010' ? 'Orders' :
+                                                                        selectedTable === 'SE2010' ? 'JournalEntries' :
+                                                                            'PurchaseInvoices'
+                                                        ) : selectedTable
+                                                    }
+                                                </div>
                                                 {row.message && (
                                                     <div style={{
                                                         fontSize: '0.72rem',
@@ -1014,16 +1376,16 @@ export default function RunMigrationPage() {
                                         {expandedRow === idx && (
                                             <tr>
                                                 <td colSpan={5} style={{ padding: '0', backgroundColor: 'rgba(0,0,0,0.3)' }}>
-                                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', padding: '1rem' }}>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1rem' }}>
                                                         <div>
-                                                            <strong style={{ display: 'block', marginBottom: '0.5rem', color: '#a1a1aa' }}>Origem (Protheus)</strong>
-                                                            <pre style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#000', borderRadius: '4px', overflow: 'auto', maxHeight: '300px' }}>
+                                                            <strong style={{ display: 'block', marginBottom: '0.5rem', color: '#a1a1aa' }}>Origem ({dataSource === 'excel' ? 'Planilha' : 'Protheus'})</strong>
+                                                            <pre style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#000', borderRadius: '4px', overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '300px' }}>
                                                                 {JSON.stringify(row.source, null, 2)}
                                                             </pre>
                                                         </div>
                                                         <div>
-                                                            <strong style={{ display: 'block', marginBottom: '0.5rem', color: '#a1a1aa' }}>Payload (SAP)</strong>
-                                                            <pre style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#000', borderRadius: '4px', overflow: 'auto', maxHeight: '300px' }}>
+                                                            <strong style={{ display: 'block', marginBottom: '0.5rem', color: '#a1a1aa' }}>Destino (SAP / Service Layer)</strong>
+                                                            <pre style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#000', borderRadius: '4px', overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '300px' }}>
                                                                 {JSON.stringify(row.target, null, 2)}
                                                             </pre>
                                                         </div>

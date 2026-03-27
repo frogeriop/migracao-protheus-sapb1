@@ -47,17 +47,26 @@ export async function POST() {
         const cookies = loginRes.headers.get('set-cookie') || '';
 
         // 2. Busca BusinessPlaces — todos os campos ──────────────────────────────
-        const bpRes = await fetch(`${config.sap.serviceLayerUrl}/BusinessPlaces`, {
-            headers: { 'Cookie': cookies, 'Prefer': 'odata.maxpagesize=200' },
-        });
+        const records: any[] = [];
+        let skip = 0;
 
-        if (!bpRes.ok) {
-            const text = await bpRes.text();
-            return NextResponse.json({ success: false, message: `BusinessPlaces falhou (${bpRes.status}): ${text}` }, { status: bpRes.status });
+        while (true) {
+            const bpRes = await fetch(`${config.sap.serviceLayerUrl}/BusinessPlaces?$skip=${skip}`, {
+                headers: { 'Cookie': cookies, 'Prefer': 'odata.maxpagesize=200' },
+            });
+
+            if (!bpRes.ok) {
+                const text = await bpRes.text();
+                return NextResponse.json({ success: false, message: `BusinessPlaces falhou (${bpRes.status}): ${text}` }, { status: bpRes.status });
+            }
+
+            const bpJson = await bpRes.json();
+            const items: any[] = bpJson.value ?? [];
+            if (items.length === 0) break;
+            
+            records.push(...items);
+            skip += items.length;
         }
-
-        const bpJson = await bpRes.json();
-        const records: any[] = bpJson.value ?? [];
 
         if (records.length === 0) {
             return NextResponse.json({ success: true, message: 'Nenhuma filial encontrada no SAP.', upserted: 0 });

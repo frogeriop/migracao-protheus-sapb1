@@ -57,11 +57,7 @@
       },
       {
         "source": "a1_bairro",
-        "target": "BPAddresses.Block",
-        "rule": {
-          "type": "address_part",
-          "part": "complement"
-        }
+        "target": "BPAddresses.Block"
       },
       {
         "source": "a1_end",
@@ -133,10 +129,19 @@
         "source": "a1_cod_mun",
         "target": "BPAddresses.County",
         "rule": {
-          "type": "lookup",
+          "type": "lookup_composite",
           "lookupTable": "ibge_municipios",
-          "lookupKey": "municipio",
-          "lookupValue": "nome_municipio"
+          "lookupValue": "codigo_ibge",
+          "compositeKey": {
+            "sourceFields": [
+              "a1_est",
+              "a1_cod_mun"
+            ],
+            "lookupKeyFields": [
+              "uf",
+              "municipio"
+            ]
+          }
         }
       },
       {
@@ -201,10 +206,19 @@
         "source": "a2_codmun",
         "target": "BPAddresses.County",
         "rule": {
-          "type": "lookup",
+          "type": "lookup_composite",
           "lookupTable": "ibge_municipios",
-          "lookupKey": "municipio",
-          "lookupValue": "nome_municipio"
+          "lookupValue": "codigo_ibge",
+          "compositeKey": {
+            "sourceFields": [
+              "a2_est",
+              "a2_codmun"
+            ],
+            "lookupKeyFields": [
+              "uf",
+              "endsWith:codigo_ibge"
+            ]
+          }
         }
       },
       {
@@ -254,11 +268,12 @@
         }
       },
       {
-        "source": "a2_cod",
+        "source": "",
         "target": "CardCode",
         "rule": {
           "type": "sap_sequence",
-          "objectType": "bp_supplier"
+          "objectType": "bp_supplier",
+          "seriesCode": 71
         }
       }
     ]
@@ -280,7 +295,7 @@
         }
       },
       {
-        "source": "e2_emissao",
+        "source": "e2_vencrea",
         "target": "DueDate",
         "rule": {
           "type": "date",
@@ -296,8 +311,8 @@
         }
       },
       {
-        "source": "",
-        "target": ""
+        "source": "e2_valor",
+        "target": "JournalEntryLines.Debit"
       }
     ]
   },
@@ -312,7 +327,7 @@
           "type": "lookup",
           "lookupTable": "sa1010",
           "lookupKey": "a1_cod",
-          "lookupValue": "sap_code"
+          "lookupValue": "__sap_id"
         }
       },
       {
@@ -379,6 +394,215 @@
               "to": "3"
             }
           ]
+        }
+      },
+      {
+        "source": "",
+        "target": "NumAtCard",
+        "rule": {
+          "type": "expression",
+          "expression": "{e1_propos}/{e1_aditiv}/{e1_parcela}"
+        }
+      }
+    ]
+  },
+  "EXCEL_f3e81e18-7197-489e-8987-1aa020728458": {
+    "sourceTable": "EXCEL_f3e81e18-7197-489e-8987-1aa020728458",
+    "targetObject": "BusinessPartnerGroups",
+    "fields": [
+      {
+        "source": "code",
+        "target": "Code"
+      },
+      {
+        "source": "name",
+        "target": "Name"
+      },
+      {
+        "source": "type",
+        "target": "Type"
+      }
+    ]
+  },
+  "EXCEL_7c44085b-44ce-4fa4-9f9f-0c1a9631497b": {
+    "sourceTable": "EXCEL_7c44085b-44ce-4fa4-9f9f-0c1a9631497b",
+    "targetObject": "BusinessPartners",
+    "fields": [
+      {
+        "source": "",
+        "target": "CardType",
+        "rule": {
+          "type": "static",
+          "value": "C"
+        }
+      },
+      {
+        "source": "cardname",
+        "target": "CardName"
+      },
+      {
+        "source": "lictradnum",
+        "target": "FederalTaxID"
+      },
+      {
+        "source": "lictradnum",
+        "target": "BPFiscalTaxIDCollection.TaxId0",
+        "rule": {
+          "type": "none",
+          "condition": {
+            "field": "fisica_juridica",
+            "operator": "equals",
+            "value": "J"
+          }
+        }
+      },
+      {
+        "source": "lictradnum",
+        "target": "BPFiscalTaxIDCollection.TaxId4",
+        "rule": {
+          "type": "none",
+          "condition": {
+            "field": "fisica_juridica",
+            "operator": "equals",
+            "value": "F"
+          }
+        }
+      },
+      {
+        "source": "addrtype",
+        "target": "BPAddresses.AddrType",
+        "rule": {
+          "type": "address_part",
+          "part": "type"
+        }
+      },
+      {
+        "source": "",
+        "target": "BPAddresses.AddressName",
+        "rule": {
+          "type": "static",
+          "value": "COBRANCA"
+        }
+      },
+      {
+        "source": "address",
+        "target": "BPAddresses.StreetNo",
+        "rule": {
+          "type": "address_part",
+          "part": "number"
+        }
+      },
+      {
+        "source": "address",
+        "target": "BPAddresses.BuildingFloorRoom",
+        "rule": {
+          "type": "address_part",
+          "part": "complement"
+        }
+      },
+      {
+        "source": "zipcode",
+        "target": "BPAddresses.ZipCode"
+      },
+      {
+        "source": "city",
+        "target": "BPAddresses.City"
+      },
+      {
+        "source": "state",
+        "target": "BPAddresses.State"
+      },
+      {
+        "source": "county",
+        "target": "BPAddresses.Country",
+        "rule": {
+          "type": "none"
+        }
+      },
+      {
+        "source": "phone1",
+        "target": "Phone1",
+        "rule": {
+          "type": "none"
+        }
+      },
+      {
+        "source": "phone2",
+        "target": "Phone2"
+      },
+      {
+        "source": "e_mail",
+        "target": "EmailAddress"
+      },
+      {
+        "source": "block",
+        "target": "BPAddresses.Block"
+      },
+      {
+        "source": "intrnsite",
+        "target": "Website"
+      },
+      {
+        "source": "taxid3",
+        "target": "BPFiscalTaxIDCollection.TaxId3"
+      },
+      {
+        "source": "lictradnum",
+        "target": "CardCode"
+      },
+      {
+        "source": "",
+        "target": "BPAddresses.AddressType",
+        "rule": {
+          "type": "static",
+          "value": "COBRANCA"
+        }
+      },
+      {
+        "source": "address",
+        "target": "BPAddresses.Street",
+        "rule": {
+          "type": "address_part",
+          "part": "street"
+        }
+      },
+      {
+        "source": "city",
+        "target": "BPAddresses.County",
+        "rule": {
+          "type": "lookup",
+          "lookupTable": "ibge_municipios",
+          "lookupKey": "nome_municipio",
+          "lookupValue": "nome_municipio"
+        }
+      },
+      {
+        "source": "taxid1",
+        "target": "BPFiscalTaxIDCollection.TaxId1"
+      }
+    ]
+  },
+  "EXCEL_7e7176e4-0ae0-4f6b-96db-68608d5835fa": {
+    "sourceTable": "EXCEL_7e7176e4-0ae0-4f6b-96db-68608d5835fa",
+    "targetObject": "ProfitCenters",
+    "fields": [
+      {
+        "source": "centercode",
+        "target": "CenterCode"
+      },
+      {
+        "source": "centername",
+        "target": "CenterName"
+      },
+      {
+        "source": "active",
+        "target": "Active"
+      },
+      {
+        "source": "effectivefrom",
+        "target": "EffectiveFrom",
+        "rule": {
+          "type": "date_iso"
         }
       }
     ]

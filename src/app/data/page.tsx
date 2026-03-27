@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useRef, useCallback } from 'react';
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { Loader2, ArrowRight, ArrowLeft, Search, X, BookOpen, Server, Link2, CheckCircle2, Sparkles, AlertCircle } from 'lucide-react';
 import { useConfig } from '@/hooks/useConfig';
 import { AgGridReact } from 'ag-grid-react';
@@ -22,7 +22,7 @@ interface TableDef {
     supabaseTable: string;
     orderBy?: string;
     isCustom?: boolean;
-    group?: 'protheus' | 'sap'; // agrupamento visual
+    group?: 'protheus' | 'sap' | 'excel'; // agrupamento visual
 }
 
 const AVAILABLE_TABLES: TableDef[] = [
@@ -33,11 +33,8 @@ const AVAILABLE_TABLES: TableDef[] = [
     { code: 'SE1010', name: 'Contas a Receber', supabaseTable: 'se1010', orderBy: 'r_e_c_n_o_', group: 'protheus' },
     { code: 'SE2010', name: 'Contas a Pagar', supabaseTable: 'se2010', orderBy: 'r_e_c_n_o_', group: 'protheus' },
     { code: 'SED010', name: 'Naturezas de Lançamento', supabaseTable: 'sed010', orderBy: 'ed_codigo', group: 'protheus', isCustom: true },
-    // ── SAP Business One ─────────────────────────────────────────────────────
-    { code: 'CoA', name: 'Plano de Contas', supabaseTable: 'sap_chart_of_accounts', orderBy: 'code', group: 'sap', isCustom: true },
-    { code: 'CC', name: 'Centros de Custo', supabaseTable: 'sap_cost_centers', orderBy: 'code', group: 'sap', isCustom: true },
-    { code: 'BP', name: 'Filiais', supabaseTable: 'sap_business_places', orderBy: 'bpl_id', group: 'sap', isCustom: true },
-    { code: 'CDP', name: 'Períodos Contábeis', supabaseTable: 'sap_posting_periods', orderBy: 'abs_entry', group: 'sap', isCustom: true },
+    // ── Excel ───────────────────────────────────────────────────────────────
+    // Entidades do Excel serão carregadas dinamicamente
 ];
 
 // Tipos
@@ -177,153 +174,7 @@ function buildGenericColDefs(keys: string[]): ColDef[] {
     }));
 }
 
-// Colunas customizadas — Plano de Contas SAP
-function buildSapCoAColDefs(keys: string[]): ColDef[] {
-    return keys.map((key): ColDef => {
-        const base: ColDef = { field: key, headerName: key.toUpperCase(), sortable: true, filter: true, resizable: true, minWidth: 90 };
-        if (key === 'code') return { ...base, pinned: 'left', width: 150, cellStyle: { fontWeight: 700, fontFamily: 'monospace' } };
-        if (key === 'name') return { ...base, flex: 2, minWidth: 220 };
-        if (key === 'account_type') {
-            return {
-                ...base, width: 120,
-                cellRenderer: (p: ICellRendererParams) => {
-                    const map: Record<string, string> = { R: 'Receita', E: 'Despesa', A: 'Ativo', L: 'Passivo', O: 'PL', N: 'Neutro' };
-                    const label = map[p.value] ?? p.value ?? '—';
-                    const colors: Record<string, string> = { R: 'rgba(16,185,129,0.15)', E: 'rgba(239,68,68,0.15)', A: 'rgba(59,130,246,0.15)', L: 'rgba(245,158,11,0.15)' };
-                    return <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.75rem', fontWeight: 700, backgroundColor: colors[p.value] || 'rgba(100,100,100,0.1)' }}>{label}</span>;
-                }
-            };
-        }
-        if (key === 'father_account') return { ...base, width: 150, cellStyle: { fontFamily: 'monospace', fontSize: '0.85rem', color: 'var(--secondary)' } };
-        if (key === 'balance') return { ...base, width: 140, cellRenderer: (p: ICellRendererParams) => p.value != null ? Number(p.value).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—' };
-        if (key === 'imported_at' || key === 'updated_at') return { ...base, width: 160, cellRenderer: (p: ICellRendererParams) => p.value ? new Date(p.value).toLocaleString('pt-BR') : '—' };
-        return { ...base, flex: 1 };
-    });
-}
 
-// Colunas customizadas — Centros de Custo SAP
-function buildSapCcColDefs(keys: string[]): ColDef[] {
-    return keys.map((key): ColDef => {
-        const base: ColDef = { field: key, headerName: key.toUpperCase(), sortable: true, filter: true, resizable: true, minWidth: 90 };
-        if (key === 'code') return { ...base, pinned: 'left', width: 160, cellStyle: { fontWeight: 700, fontFamily: 'monospace' } };
-        if (key === 'name') return { ...base, flex: 2, minWidth: 220 };
-        if (key === 'imported_at' || key === 'updated_at') return { ...base, width: 160, cellRenderer: (p: ICellRendererParams) => p.value ? new Date(p.value).toLocaleString('pt-BR') : '—' };
-        return { ...base, flex: 1 };
-    });
-}
-
-// Colunas customizadas — Business Places (Filiais SAP)
-function buildSapBpColDefs(keys: string[]): ColDef[] {
-    // Ordem das colunas mais relevantes primeiro
-    const PRIORITY = ['bpl_id', 'bpl_name', 'alias_name', 'main_bpl', 'disabled', 'federal_tax_id', 'state', 'city', 'default_warehouse_id', 'default_tax_code', 'environment_type'];
-    const SKIP = ['bpl_name_foreign', 'address_full', 'address_foreign', 'ie_numbers', 'tributary_infos']; // colunas verbosas no final
-    const others = keys.filter(k => !PRIORITY.includes(k) && !SKIP.includes(k));
-    const skipped = keys.filter(k => SKIP.includes(k));
-    const ordered = [...PRIORITY.filter(k => keys.includes(k)), ...others, ...skipped];
-
-    return ordered.map((key): ColDef => {
-        const base: ColDef = { field: key, headerName: key.toUpperCase(), sortable: true, filter: true, resizable: true, minWidth: 90 };
-
-        if (key === 'bpl_id') return {
-            ...base, pinned: 'left', width: 80, headerName: 'BPLID',
-            cellStyle: { fontWeight: 700, fontFamily: 'monospace', textAlign: 'center' },
-        };
-        if (key === 'bpl_name') return { ...base, flex: 2, minWidth: 220, headerName: 'NOME' };
-        if (key === 'alias_name') return { ...base, width: 160, headerName: 'ALIAS' };
-
-        if (key === 'main_bpl') return {
-            ...base, width: 90, headerName: 'MATRIZ',
-            cellRenderer: (p: ICellRendererParams) => p.value
-                ? <span style={{ padding: '2px 10px', borderRadius: 99, fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(16,185,129,0.15)', color: '#10b981' }}>★ Sim</span>
-                : <span style={{ color: 'var(--secondary)', fontSize: '0.78rem' }}>—</span>,
-        };
-        if (key === 'disabled') return {
-            ...base, width: 90, headerName: 'STATUS',
-            cellRenderer: (p: ICellRendererParams) => p.value
-                ? <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(239,68,68,0.15)', color: 'var(--error)' }}>Inativa</span>
-                : <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(16,185,129,0.12)', color: '#10b981' }}>Ativa</span>,
-        };
-        if (key === 'federal_tax_id') return {
-            ...base, width: 160, headerName: 'CNPJ',
-            cellStyle: { fontFamily: 'monospace', fontSize: '0.85rem' },
-            cellRenderer: (p: ICellRendererParams) => {
-                if (!p.value) return <span style={{ color: 'var(--secondary)' }}>—</span>;
-                // Formata CNPJ: 00.000.000/0000-00
-                const v = String(p.value).replace(/\D/g, '');
-                if (v.length === 14) return `${v.slice(0, 2)}.${v.slice(2, 5)}.${v.slice(5, 8)}/${v.slice(8, 12)}-${v.slice(12)}`;
-                return p.value;
-            },
-        };
-        if (key === 'environment_type') return {
-            ...base, width: 120, headerName: 'AMBIENTE',
-            cellRenderer: (p: ICellRendererParams) => {
-                if (p.value === 1) return <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(239,68,68,0.12)', color: 'var(--error)' }}>Produção</span>;
-                if (p.value === 2) return <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(245,158,11,0.12)', color: '#f59e0b' }}>Homologação</span>;
-                return <span style={{ color: 'var(--secondary)' }}>—</span>;
-            },
-        };
-        if (key === 'default_warehouse_id') return { ...base, width: 100, headerName: 'DEPÓSITO', cellStyle: { fontFamily: 'monospace', fontWeight: 600 } };
-        if (key === 'default_tax_code') return { ...base, width: 110, headerName: 'COD. FISCAL', cellStyle: { fontFamily: 'monospace' } };
-        if (key === 'state') return { ...base, width: 70, headerName: 'UF' };
-        if (key === 'city') return { ...base, width: 160, headerName: 'CIDADE' };
-        if (key === 'zip_code') return { ...base, width: 110, headerName: 'CEP', cellStyle: { fontFamily: 'monospace' } };
-        if (key === 'federal_tax_id2') return { ...base, width: 130, headerName: 'IE', cellStyle: { fontFamily: 'monospace', fontSize: '0.82rem' } };
-        if (key === 'ie_numbers' || key === 'tributary_infos') return {
-            ...base, width: 120, headerName: key === 'ie_numbers' ? 'IE NÚMEROS' : 'INF. TRIB.',
-            cellRenderer: (p: ICellRendererParams) => {
-                const arr = Array.isArray(p.value) ? p.value : [];
-                return arr.length > 0
-                    ? <span style={{ fontSize: '0.75rem', color: 'var(--secondary)' }}>{arr.length} item(s)</span>
-                    : <span style={{ color: 'var(--secondary)' }}>—</span>;
-            },
-        };
-        if (key === 'imported_at' || key === 'updated_at') return {
-            ...base, width: 160,
-            cellRenderer: (p: ICellRendererParams) => p.value ? new Date(p.value).toLocaleString('pt-BR') : '—',
-        };
-        if (key === 'main_bpl' || typeof key === 'boolean') return { ...base, width: 90 };
-        return { ...base, flex: 1, minWidth: 110 };
-    });
-}
-
-// Colunas customizadas — Períodos Contábeis SAP (OFPR)
-function buildSapCdpColDefs(keys: string[]): ColDef[] {
-    const fmtDate = (v: string | null) => {
-        if (!v) return '—';
-        try { return new Date(v).toLocaleDateString('pt-BR'); } catch { return v; }
-    };
-    return keys.map((key): ColDef => {
-        const base: ColDef = { field: key, headerName: key.toUpperCase(), sortable: true, filter: true, resizable: true, minWidth: 90 };
-        if (key === 'abs_entry') return { ...base, pinned: 'left', width: 90, headerName: 'ID', cellStyle: { fontWeight: 700, fontFamily: 'monospace', textAlign: 'center' } };
-        if (key === 'name') return {
-            ...base, pinned: 'left', width: 110, headerName: 'PERÍODO',
-            cellRenderer: (p: ICellRendererParams) => (
-                <span style={{
-                    padding: '2px 10px', borderRadius: 99, fontSize: '0.8rem', fontWeight: 700,
-                    fontFamily: 'monospace', backgroundColor: 'rgba(59,130,246,0.12)', color: 'var(--primary)',
-                }}>{p.value}</span>
-            ),
-        };
-        if (key === 'f_ref_date') return { ...base, width: 130, headerName: 'INÍCIO LANÇAM.', cellRenderer: (p: ICellRendererParams) => fmtDate(p.value) };
-        if (key === 't_ref_date') return { ...base, width: 130, headerName: 'FIM LANÇAM.', cellRenderer: (p: ICellRendererParams) => fmtDate(p.value) };
-        if (key === 'f_due_date') return { ...base, width: 130, headerName: 'INÍCIO VENCIM.', cellRenderer: (p: ICellRendererParams) => fmtDate(p.value) };
-        if (key === 't_due_date') return {
-            ...base, width: 130, headerName: 'FIM VENCIM.',
-            cellRenderer: (p: ICellRendererParams) => {
-                if (!p.value) return <span style={{ color: 'var(--secondary)' }}>Aberto</span>;
-                return <span style={{ color: 'var(--secondary)' }}>{fmtDate(p.value)}</span>;
-            },
-        };
-        if (key === 'indicator') return {
-            ...base, width: 110, headerName: 'INDICADOR',
-            cellRenderer: (p: ICellRendererParams) => p.value
-                ? <span style={{ padding: '2px 8px', borderRadius: 4, fontSize: '0.75rem', fontWeight: 700, backgroundColor: 'rgba(16,185,129,0.12)', color: '#10b981' }}>{p.value}</span>
-                : <span style={{ color: 'var(--secondary)' }}>—</span>,
-        };
-        if (key === 'imported_at') return { ...base, width: 160, cellRenderer: (p: ICellRendererParams) => p.value ? new Date(p.value).toLocaleString('pt-BR') : '—' };
-        return { ...base, flex: 1 };
-    });
-}
 
 interface ApplyProgress {
     total: number;
@@ -331,6 +182,8 @@ interface ApplyProgress {
     errors: number;
     log: { code: string; name: string; account: string; ok: boolean; msg?: string }[];
 }
+
+interface SapAccount { code: string; name: string; }
 
 export default function DataViewerPage() {
     const { config, loading } = useConfig();
@@ -342,6 +195,23 @@ export default function DataViewerPage() {
     const [sapLoading, setSapLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saveMsg, setSaveMsg] = useState<string | null>(null);
+    const [activeTab, setActiveTab] = useState<'protheus' | 'excel'>('protheus');
+    const [excelEntities, setExcelEntities] = useState<any[]>([]);
+
+    useEffect(() => {
+        if (!loading) {
+            fetch('/api/migration/entities')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.data) {
+                        const linked = data.data.filter((e: any) => e.source_file_path);
+                        setExcelEntities(linked);
+                    }
+                })
+                .catch(console.error);
+        }
+    }, [loading]);
+
     const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const openLinkModal = useCallback(async (row: any) => {
@@ -511,10 +381,6 @@ export default function DataViewerPage() {
         if (!data || data.length === 0) return [];
         const keys = Object.keys(data[0]);
         if (selectedTable?.code === 'SED010') return buildSed010ColDefs(keys, openLinkModal);
-        if (selectedTable?.code === 'CoA') return buildSapCoAColDefs(keys);
-        if (selectedTable?.code === 'CC') return buildSapCcColDefs(keys);
-        if (selectedTable?.code === 'BP') return buildSapBpColDefs(keys);
-        if (selectedTable?.code === 'CDP') return buildSapCdpColDefs(keys);
         return buildGenericColDefs(keys);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [data, selectedTable, openLinkModal]);
@@ -531,7 +397,7 @@ export default function DataViewerPage() {
                 table: tableDef.supabaseTable,
                 page: String(p),
                 limit: String(limit),
-                orderBy: tableDef.orderBy || 'r_e_c_n_o_',
+                orderBy: tableDef.orderBy || (tableDef.group === 'excel' ? 'id' : 'r_e_c_n_o_'),
                 ...(searchTerm ? { search: searchTerm } : {}),
             });
             const res = await fetch(`/api/data?${params}`);
@@ -568,13 +434,35 @@ export default function DataViewerPage() {
 
     return (
         <div className="container" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 40px)' }}>
-            <h1 className="page-title">Dados Replicados (AG Grid)</h1>
+            <h1 className="page-title">Conferência de Dados Importados (Staging)</h1>
 
-            {/* Seleção de tabelas — dois grupos */}
             <div className="card" style={{ marginBottom: '1rem' }}>
-                {/* Grupo Protheus */}
-                <div style={{ marginBottom: '0.6rem' }}>
-                    <span style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--secondary)', marginRight: '0.5rem' }}>Protheus</span>
+                <div style={{ display: 'flex', gap: '2rem', borderBottom: '1px solid var(--card-border)', marginBottom: '1rem' }}>
+                    <button
+                        onClick={() => { setActiveTab('protheus'); setSelectedTable(null); setData([]); }}
+                        style={{
+                            padding: '0.8rem 0.5rem', background: 'none', border: 'none', cursor: 'pointer',
+                            fontSize: '0.9rem', fontWeight: activeTab === 'protheus' ? 700 : 500,
+                            color: activeTab === 'protheus' ? 'var(--primary)' : 'var(--secondary)',
+                            borderBottom: activeTab === 'protheus' ? '2px solid var(--primary)' : '2px solid transparent',
+                        }}
+                    >
+                        Origem: TOTVS Protheus
+                    </button>
+                    <button
+                        onClick={() => { setActiveTab('excel'); setSelectedTable(null); setData([]); }}
+                        style={{
+                            padding: '0.8rem 0.5rem', background: 'none', border: 'none', cursor: 'pointer',
+                            fontSize: '0.9rem', fontWeight: activeTab === 'excel' ? 700 : 500,
+                            color: activeTab === 'excel' ? '#10b981' : 'var(--secondary)',
+                            borderBottom: activeTab === 'excel' ? '2px solid #10b981' : '2px solid transparent',
+                        }}
+                    >
+                        Origem: Planilha Excel
+                    </button>
+                </div>
+
+                {activeTab === 'protheus' && (
                     <div style={{ display: 'inline-flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                         {AVAILABLE_TABLES.filter(t => t.group === 'protheus').map(t => {
                             const isActive = selectedTable?.code === t.code;
@@ -595,30 +483,42 @@ export default function DataViewerPage() {
                             );
                         })}
                     </div>
-                </div>
-                {/* Grupo SAP B1 */}
-                <div>
-                    <span style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#10b981', marginRight: '0.5rem' }}>SAP B1</span>
+                )}
+
+                {activeTab === 'excel' && (
                     <div style={{ display: 'inline-flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                        {AVAILABLE_TABLES.filter(t => t.group === 'sap').map(t => {
-                            const isActive = selectedTable?.code === t.code;
-                            return (
-                                <button key={t.code} onClick={() => fetchTableData(t, 1, '')} style={{
-                                    display: 'flex', alignItems: 'center', gap: '0.35rem',
-                                    padding: '0.35rem 0.75rem', borderRadius: '6px', fontSize: '0.82rem',
-                                    fontWeight: isActive ? 700 : 500, cursor: 'pointer',
-                                    border: `1px solid ${isActive ? '#10b981' : 'var(--card-border)'}`,
-                                    backgroundColor: isActive ? 'rgba(16,185,129,0.1)' : 'var(--background)',
-                                    color: isActive ? '#10b981' : 'var(--secondary)', transition: 'all 0.15s',
-                                }}>
-                                    <Server size={12} />
-                                    <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{t.code}</span>
-                                    <span style={{ fontSize: '0.75rem', opacity: 0.75 }}>{t.name}</span>
-                                </button>
-                            );
-                        })}
+                        {excelEntities.length === 0 ? (
+                            <span style={{ fontSize: '0.85rem', color: 'var(--secondary)' }}>Nenhuma planilha vinculada em Configurações.</span>
+                        ) : (
+                            excelEntities.map(t => {
+                                const isActive = selectedTable?.code === t.name;
+                                return (
+                                    <button
+                                        key={t.id}
+                                        onClick={() => fetchTableData({
+                                            code: t.name,
+                                            name: t.target_object,
+                                            supabaseTable: t.staging_table,
+                                            group: 'excel' as any
+                                        }, 1, '')}
+                                        style={{
+                                            display: 'flex', alignItems: 'center', gap: '0.35rem',
+                                            padding: '0.35rem 0.75rem', borderRadius: '6px', fontSize: '0.82rem',
+                                            fontWeight: isActive ? 700 : 500, cursor: 'pointer',
+                                            border: `1px solid ${isActive ? '#10b981' : 'var(--card-border)'}`,
+                                            backgroundColor: isActive ? 'rgba(16,185,129,0.1)' : 'var(--background)',
+                                            color: isActive ? '#10b981' : 'var(--secondary)', transition: 'all 0.15s',
+                                        }}
+                                    >
+                                        <BookOpen size={12} />
+                                        <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{t.name}</span>
+                                        <span style={{ fontSize: '0.75rem', opacity: 0.75 }}>{t.target_object}</span>
+                                    </button>
+                                );
+                            })
+                        )}
                     </div>
-                </div>
+                )}
             </div>
 
             {isLoading ? (
@@ -799,13 +699,13 @@ export default function DataViewerPage() {
                             <div>
                                 <div style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#10b981', marginBottom: '0.25rem' }}>Vincular Conta SAP B1</div>
                                 <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>
-                                    <span style={{ fontFamily: 'monospace', color: 'var(--primary)' }}>{modalRow.ed_codigo}</span>
+                                    <span style={{ fontFamily: 'monospace', color: '#60a5fa' }}>{modalRow.ed_codigo}</span>
                                     {' — '}
                                     <span>{modalRow.ed_descric}</span>
                                 </div>
                                 {modalRow.sap_account_code && (
                                     <div style={{ fontSize: '0.78rem', color: 'var(--secondary)', marginTop: '0.2rem' }}>
-                                        Atual: <span style={{ fontFamily: 'monospace', color: 'var(--primary)' }}>{modalRow.sap_account_code}</span>
+                                        Atual: <span style={{ fontFamily: 'monospace', color: '#60a5fa' }}>{modalRow.sap_account_code}</span>
                                         {' '}{modalRow.sap_account_name}
                                     </div>
                                 )}
@@ -868,7 +768,14 @@ export default function DataViewerPage() {
 
                             {sapAccounts.map(acc => {
                                 const isSelected = acc.code === modalRow.sap_account_code;
-                                const typeColors: Record<string, string> = { R: '#10b981', E: '#ef4444', A: '#3b82f6', L: '#f59e0b' };
+                                const typeColors: Record<string, string> = { 
+                                    'at_Revenues': '#10b981', // green
+                                    'at_Expenses': '#ef4444', // red
+                                    'at_Other': '#94a3b8'     // slate
+                                };
+                                const badgeColor = typeColors[acc.account_type || ''] || '#94a3b8';
+                                const badgeBg = badgeColor + '22';
+                                
                                 return (
                                     <button
                                         key={acc.code}
@@ -884,10 +791,10 @@ export default function DataViewerPage() {
                                         onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.backgroundColor = 'rgba(255,255,255,0.04)'; }}
                                         onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
                                     >
-                                        <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.85rem', color: 'var(--primary)', minWidth: 120, flexShrink: 0 }}>{acc.code}</span>
-                                        <span style={{ fontSize: '0.85rem', flex: 1 }}>{acc.name}</span>
+                                        <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: '0.85rem', color: '#60a5fa', minWidth: 120, flexShrink: 0 }}>{acc.code}</span>
+                                        <span style={{ fontSize: '0.85rem', flex: 1, color: isSelected ? '#fff' : 'var(--foreground)' }}>{acc.name}</span>
                                         {acc.account_type && (
-                                            <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, flexShrink: 0, backgroundColor: `${typeColors[acc.account_type] || '#64748b'}22`, color: typeColors[acc.account_type] || 'var(--secondary)' }}>
+                                            <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '1px 6px', borderRadius: 4, flexShrink: 0, backgroundColor: badgeBg, color: badgeColor }}>
                                                 {acc.account_type}
                                             </span>
                                         )}

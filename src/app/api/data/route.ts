@@ -47,21 +47,69 @@ export async function GET(request: Request) {
         });
 
         const tableKey = table.toLowerCase();
+        
+        // ── Action: columns ──────────────────────────────────────────────────
+        if (searchParams.get('action') === 'columns') {
+            try {
+                // Fetch table schema directly via PostgREST OpenAPI definition
+                const optionsRes = await fetch(`${config.supabase.url}/rest/v1/`, {
+                    method: 'GET',
+                    headers: {
+                        'apikey': config.supabase.key,
+                        'Authorization': `Bearer ${config.supabase.key}`,
+                        'Accept': 'application/openapi+json'
+                    }
+                });
+
+                if (optionsRes.ok) {
+                    const openapi = await optionsRes.json();
+                    if (openapi && openapi.definitions && openapi.definitions[tableKey]) {
+                        const props = openapi.definitions[tableKey].properties || {};
+                        const hiddenCols = ['id', 'd_e_l_e_t_', '__source_key', '__sap_id', '__integration_status', '__sync_message', '__last_sync', 'r_e_c_n_o_'];
+                        const cols = Object.keys(props).filter(c => !hiddenCols.includes(c));
+                        if (cols.length > 0) {
+                            return NextResponse.json({ success: true, data: cols });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn('Fallback to select limit 1 for columns due to error:', err);
+            }
+            
+            // Fallback: se der erro ou Swagger não retornar nada
+            const fallback = await supabase.from(tableKey).select('*').limit(1);
+            if (fallback.data && fallback.data.length > 0) {
+                const hiddenCols = ['id', 'd_e_l_e_t_', '__source_key', '__sap_id', '__integration_status', '__sync_message', '__last_sync', 'r_e_c_n_o_'];
+                const cols = Object.keys(fallback.data[0]).filter(c => !hiddenCols.includes(c));
+                return NextResponse.json({ success: true, data: cols });
+            }
+            return NextResponse.json({ success: true, data: [] });
+        }
+
+        const isStagingTable = tableKey.startsWith('stg_');
+        const primaryKey = isStagingTable ? '__source_key' : 'r_e_c_n_o_';
+        const orderColumn = searchParams.get('orderBy') || primaryKey;
 
         // ── Monta query com filtros ANTES da paginação ─────────────────────────
         // ORDER: WHERE (search + ordem) → RANGE (página) para busca em toda a tabela
         let query = supabase
             .from(tableKey)
             .select('*', { count: 'exact' })
-            .order(orderBy, { ascending: true });
+            .order(orderColumn, { ascending: true });
+
+        let searchCols = SEARCH_COLUMNS[tableKey];
+        if (!searchCols && isStagingTable) {
+            const { data: firstRow } = await supabase.from(tableKey).select('*').limit(1);
+            if (firstRow && firstRow.length > 0) {
+                const excludeTypes = ['id', '__last_sync']; // id = bigint, __last_sync = timestamp (não suportam ilike diretamente)
+                searchCols = Object.keys(firstRow[0]).filter(c => !excludeTypes.includes(c));
+            }
+        }
 
         // Filtro de busca textual — vai para WHERE, busca na tabela INTEIRA
-        if (search) {
-            const cols = SEARCH_COLUMNS[tableKey];
-            if (cols && cols.length > 0) {
-                const orClause = cols.map(c => `${c}.ilike.%${search}%`).join(',');
-                query = query.or(orClause);
-            }
+        if (search && searchCols && searchCols.length > 0) {
+            const orClause = searchCols.map(c => `${c}.ilike.%${search}%`).join(',');
+            query = query.or(orClause);
         }
 
         // Paginação aplicada APÓS os filtros
@@ -76,12 +124,9 @@ export async function GET(request: Request) {
                 .from(tableKey)
                 .select('*', { count: 'exact' });
 
-            if (search) {
-                const cols = SEARCH_COLUMNS[tableKey];
-                if (cols && cols.length > 0) {
-                    const orClause = cols.map(c => `${c}.ilike.%${search}%`).join(',');
-                    fbQuery = fbQuery.or(orClause);
-                }
+            if (search && searchCols && searchCols.length > 0) {
+                const orClause = searchCols.map(c => `${c}.ilike.%${search}%`).join(',');
+                fbQuery = fbQuery.or(orClause);
             }
 
             fbQuery = fbQuery.range(offset, offset + limit - 1);
@@ -136,10 +181,13 @@ export async function PUT(request: Request) {
             auth: { persistSession: false }
         });
 
+        const isStagingTable = table.toLowerCase().startsWith('stg_');
+        const primaryKey = isStagingTable ? '__source_key' : 'r_e_c_n_o_';
+
         const { error } = await supabase
             .from(table.toLowerCase())
             .update(data)
-            .eq('r_e_c_n_o_', id);
+            .eq(primaryKey, id);
 
         if (error) {
             return NextResponse.json({ success: false, message: error.message }, { status: 500 });

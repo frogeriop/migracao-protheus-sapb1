@@ -287,8 +287,7 @@ export async function GET(request: Request) {
         // O SAP SL pode gravar 'at_Other', 'at_other', etc. — filtramos case-insensitive via ilike
         const { data: accounts, error: accError } = await supabase
             .from('sap_chart_of_accounts')
-            .select('code, name, account_type, father_account')
-            .not('account_type', 'ilike', 'at_other');
+            .select('code, name, account_type, father_account');
         if (accError) throw new Error(accError.message);
 
         if (!accounts || accounts.length === 0) {
@@ -317,8 +316,8 @@ export async function GET(request: Request) {
             const edCond = (nat.ed_cond || '').trim().toUpperCase();
 
             let candidatePool: any[];
-            if (edCond === 'D') candidatePool = expenseAccounts;
-            else if (edCond === 'R') candidatePool = revenueAccounts;
+            if (edCond === 'D' && expenseAccounts.length > 0) candidatePool = expenseAccounts;
+            else if (edCond === 'R' && revenueAccounts.length > 0) candidatePool = revenueAccounts;
             else candidatePool = accounts; // fallback: todos
 
             let bestAccount = null;

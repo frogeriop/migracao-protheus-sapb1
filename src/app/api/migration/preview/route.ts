@@ -24,6 +24,144 @@ async function getMappings(): Promise<{ [key: string]: TableMapping }> {
     }
 }
 
+type ExcelFilter = {
+    field: string;
+    operator: 'contains' | 'equals' | 'starts_with';
+    value: string;
+};
+
+// Helper to normalize column names (mirrors excel/route.ts)
+function normalizeKey(name: string): string {
+    return name
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9_]/g, "_")
+        .replace(/^_+|_+$/g, "");
+}
+
+function readSourceByAliases(source: any, aliases: string[]): any {
+    for (const alias of aliases) {
+        const val =
+            source?.[alias] ??
+            source?.[alias.toUpperCase?.()] ??
+            source?.[alias.toLowerCase?.()] ??
+            source?.[normalizeKey(alias)];
+        if (val !== undefined && val !== null && String(val).trim() !== '') return val;
+    }
+    return undefined;
+}
+
+function normalizeTargetPayloadKeys(target: any, targetObject: string): any {
+    const out = { ...target };
+    const mapKey = (from: string, to: string) => {
+        const val = out[from];
+        if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) return;
+        if (out[to] === undefined || out[to] === null || (typeof out[to] === 'string' && out[to].trim() === '')) {
+            out[to] = val;
+        }
+        delete out[from];
+    };
+
+    if (targetObject === 'ChartOfAccounts') {
+        // Normaliza aliases DI API/coluna para nomes esperados no Service Layer.
+        mapKey('AcctCode', 'Code');
+        mapKey('acctcode', 'Code');
+        mapKey('code', 'Code');
+        mapKey('AcctName', 'Name');
+        mapKey('acctname', 'Name');
+        mapKey('name', 'Name');
+        mapKey('FatherNum', 'FatherAccountKey');
+        mapKey('fathernum', 'FatherAccountKey');
+        mapKey('fatheraccountkey', 'FatherAccountKey');
+        mapKey('Postable', 'ActiveAccount');
+        mapKey('postable', 'ActiveAccount');
+        mapKey('ActType', 'AccountType');
+        mapKey('acttype', 'AccountType');
+        mapKey('accounttype', 'AccountType');
+        mapKey('formatcode', 'FormatCode');
+
+        // Tax Extension Fields (Brazil Localization UDFs)
+        mapKey('u_tx_contacosif', 'U_TX_ContaCOSIF');
+        mapKey('u_tx_codigodesif', 'U_TX_CodigoDesIf');
+        mapKey('u_tx_outrosprodservdesif', 'U_TX_OutrosProdServDesIf');
+        mapKey('u_tx_des_mista', 'U_TX_Des_Mista');
+        mapKey('u_tx_des_contasuperior', 'U_TX_Des_ContaSuperior');
+        mapKey('u_tx_nataccount', 'U_TX_NatAccount');
+        mapKey('u_tx_nat_rec', 'U_TX_NAT_REC');
+        mapKey('u_tx_tiporeceitabruta', 'U_TX_TipoReceitaBruta');
+        mapKey('u_tx_regcaixa', 'U_TX_RegCaixa');
+        mapKey('u_tx_ocultarconta', 'U_TX_OcultarConta');
+
+        // Campo de nível vindo da origem costuma ser informativo; não é campo de criação.
+        delete out.Levels;
+        delete out.levels;
+        delete out.Level;
+        delete out.level;
+        delete out.AccountLevel;
+    } else if (targetObject === 'BusinessPartners') {
+        mapKey('cardcode', 'CardCode');
+        mapKey('cardname', 'CardName');
+        mapKey('cardtype', 'CardType');
+    } else if (targetObject === 'Items') {
+        mapKey('itemcode', 'ItemCode');
+        mapKey('itemname', 'ItemName');
+    } else if (targetObject === 'Orders') {
+        mapKey('cardcode', 'CardCode');
+        mapKey('documentlines', 'DocumentLines');
+    } else if (targetObject === 'JournalEntries') {
+        mapKey('journalentrylines', 'JournalEntryLines');
+    }
+
+    return out;
+}
+
+function ensureMandatoryPayloadFields(target: any, source: any, targetObject: string, mapping: TableMapping): any {
+    const out = { ...target };
+    const setIfMissing = (field: string, aliases: string[], fallback?: any) => {
+        const hasSapSequence = mapping.fields.some(f => f.target === field && f.rule?.type === 'sap_sequence');
+        if (hasSapSequence) return;
+        
+        const cur = out[field];
+        if (cur !== undefined && cur !== null && String(cur).trim() !== '') return;
+        const fromSource = readSourceByAliases(source, aliases);
+        if (fromSource !== undefined) {
+            out[field] = fromSource;
+        } else if (fallback !== undefined) {
+            out[field] = fallback;
+        } else {
+            delete out[field];
+        }
+    };
+
+    if (targetObject === 'BusinessPartners') {
+        setIfMissing('CardCode', ['CardCode', 'cardcode', 'a1_cod', 'a2_cod', 'codigo'], '');
+        setIfMissing('CardName', ['CardName', 'cardname', 'a1_nome', 'a2_nome', 'nome'], '');
+        setIfMissing('CardType', ['CardType', 'cardtype', 'tipo'], '');
+    } else if (targetObject === 'Items') {
+        setIfMissing('ItemCode', ['ItemCode', 'itemcode', 'b1_cod', 'codigo'], '');
+        setIfMissing('ItemName', ['ItemName', 'itemname', 'b1_desc', 'descricao', 'nome'], '');
+    } else if (targetObject === 'ChartOfAccounts') {
+        setIfMissing('Code', ['Code', 'code', 'AcctCode', 'acctcode', 'conta', 'codigo'], '');
+        setIfMissing('FormatCode', ['FormatCode', 'formatcode']); // Sem fallback: remove campo vazio
+        setIfMissing('Name', ['Name', 'name', 'AcctName', 'acctname', 'descricao', 'nome'], '');
+        setIfMissing('FatherAccountKey', ['FatherAccountKey', 'fatheraccountkey', 'FatherNum', 'fathernum', 'conta_pai', 'pai'], '');
+        setIfMissing('ActiveAccount', ['ActiveAccount', 'activeaccount', 'Postable', 'postable'], 'tYES');
+        setIfMissing('AccountType', ['AccountType', 'accounttype', 'ActType', 'acttype']); // Sem fallback: remove campo vazio
+    } else if (targetObject === 'Orders') {
+        setIfMissing('CardCode', ['CardCode', 'cardcode', 'e1_cliente', 'cliente'], '');
+        if (!Array.isArray(out.DocumentLines)) {
+            out.DocumentLines = out.DocumentLines ? [out.DocumentLines] : [];
+        }
+    } else if (targetObject === 'JournalEntries') {
+        if (!Array.isArray(out.JournalEntryLines)) {
+            out.JournalEntryLines = out.JournalEntryLines ? [out.JournalEntryLines] : [];
+        }
+    }
+
+    return out;
+}
+
 // Helper to transform record based on mapping
 async function transformRecord(sourceRecord: any, mapping: TableMapping, supabase: any, duplicateAddress: boolean = false): Promise<any> {
     const targetRecord: any = {};
@@ -33,16 +171,26 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
     for (const field of mapping.fields) {
         if (!field.target) continue;
 
-        // Para tipo 'static', source não é necessário — o valor é literal
-        const isStatic = field.rule?.type === 'static';
-        if (!isStatic && !field.source) continue;
+        // Para tipo 'static', 'expression' ou 'sap_sequence', source não é obrigatório
+        const isSourceOptional = field.rule?.type === 'static' || field.rule?.type === 'sap_sequence' || field.rule?.type === 'expression';
+        if (!isSourceOptional && !field.source) continue;
 
-        const originalValue = field.source
-            ? (sourceRecord[field.source] ?? sourceRecord[field.source.toUpperCase()] ?? sourceRecord[field.source.toLowerCase()])
+        let originalValue = field.source
+            ? (sourceRecord[field.source] ?? 
+               sourceRecord[field.source.toUpperCase()] ?? 
+               sourceRecord[field.source.toLowerCase()] ??
+               sourceRecord[normalizeKey(field.source)])
             : undefined;
 
-        // Pula registros sem valor de origem APENAS para regras não-static
-        if (!isStatic && (originalValue === undefined || originalValue === null)) continue;
+        // Auto-match fallback: If the explicit source map yielded nothing, see if the Excel file provided
+        // a column exactly matching the target SAP field name (e.g. 'cardname' -> 'CardName').
+        if (originalValue === undefined || originalValue === null) {
+            const targetBaseName = field.target.includes('.') ? field.target.split('.').pop()! : field.target;
+            originalValue = sourceRecord[normalizeKey(targetBaseName)] ?? sourceRecord[targetBaseName] ?? sourceRecord[targetBaseName.toLowerCase()];
+        }
+
+        // Pula registros sem valor de origem APENAS para regras que exigem origem
+        if (!isSourceOptional && (originalValue === undefined || originalValue === null)) continue;
 
         let finalValue: any = typeof originalValue === 'string' ? originalValue.trim() : originalValue;
 
@@ -51,7 +199,9 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
             // Condition check
             if (field.rule.condition) {
                 const cond = field.rule.condition;
-                const recordVal = sourceRecord[cond.field] ?? sourceRecord[cond.field.toLowerCase()];
+                const recordVal = sourceRecord[cond.field] ?? 
+                                sourceRecord[cond.field.toLowerCase()] ??
+                                sourceRecord[normalizeKey(cond.field)];
                 if (cond.operator === 'equals' && String(recordVal) !== String(cond.value)) continue;
                 if (cond.operator === 'not_equals' && String(recordVal) === String(cond.value)) continue;
             }
@@ -79,6 +229,15 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                         finalValue = raw;
                     }
                     console.log(`[static] → finalValue=${JSON.stringify(finalValue)}`);
+                    break;
+                }
+                case 'expression': {
+                    if (field.rule.expression) {
+                        finalValue = field.rule.expression.replace(/\{([^}]+)\}/g, (_, key) => {
+                            const val = sourceRecord[key] ?? sourceRecord[key.toUpperCase()] ?? sourceRecord[key.toLowerCase()] ?? sourceRecord[normalizeKey(key)];
+                            return val !== undefined && val !== null ? String(val).trim() : '';
+                        });
+                    }
                     break;
                 }
                 case 'map':
@@ -113,22 +272,73 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                     }
                     break;
                 case 'lookup_composite': {
-                    // JOIN com chave composta: ex e1_cliente+e1_loja → sa1010.(a1_cod+a1_loja) → sap_code
+                    // JOIN com chave composta: ex e1_cliente+e1_loja → sa1010.(a1_cod+a1_loja) → __sap_id
                     const ck = field.rule.compositeKey;
                     if (ck && field.rule.lookupTable && field.rule.lookupValue) {
                         let q = supabase.from(field.rule.lookupTable).select(field.rule.lookupValue);
                         for (let i = 0; i < ck.sourceFields.length; i++) {
                             const sf = ck.sourceFields[i];
                             const lf = ck.lookupKeyFields[i];
-                            const sv = (sourceRecord[sf] || sourceRecord[sf.toUpperCase()] || '').toString().trim();
-                            q = q.eq(lf, sv);
+                            const sv = (sourceRecord[sf] || 
+                                        sourceRecord[sf.toUpperCase()] || 
+                                        sourceRecord[normalizeKey(sf)] || 
+                                        '').toString().trim();
+                                        
+                            // Build dictionary for prefix lookup
+                            const UF_CODES: Record<string, string> = {
+                                'RO':'11', 'AC':'12', 'AM':'13', 'RR':'14', 'PA':'15', 'AP':'16', 'TO':'17',
+                                'MA':'21', 'PI':'22', 'CE':'23', 'RN':'24', 'PB':'25', 'PE':'26', 'AL':'27', 'SE':'28', 'BA':'29',
+                                'MG':'31', 'ES':'32', 'RJ':'33', 'SP':'35',
+                                'PR':'41', 'SC':'42', 'RS':'43',
+                                'MS':'50', 'MT':'51', 'GO':'52', 'DF':'53'
+                            };
+
+                            if (field.rule.lookupTable === 'ibge_municipios' && (lf === 'uf' || lf === 'municipio')) {
+                                // Extract the UF state code from ck
+                                const ufIndex = ck.lookupKeyFields.indexOf('uf');
+                                const munIndex = ck.lookupKeyFields.indexOf('municipio');
+                                
+                                if (ufIndex !== -1 && munIndex !== -1) {
+                                    const rawUf = sourceRecord[ck.sourceFields[ufIndex]] || sourceRecord[normalizeKey(ck.sourceFields[ufIndex])] || '';
+                                    const rawMun = sourceRecord[ck.sourceFields[munIndex]] || sourceRecord[normalizeKey(ck.sourceFields[munIndex])] || '';
+                                    const parsedUf = String(rawUf).toString().trim().toUpperCase();
+                                    const parsedMun = String(rawMun).toString().trim();
+                                    
+                                    if (UF_CODES[parsedUf]) {
+                                        const exactIbge = UF_CODES[parsedUf] + parsedMun;
+                                        // Apenas aplicamos o filtro UMA VEZ no loop (quando lf for uf, a gente aplica. quando for municipio, pula)
+                                        if (lf === 'uf') {
+                                            q = q.eq('codigo_ibge', exactIbge);
+                                        }
+                                        continue;
+                                    }
+                                }
+                                
+                                // Fallback se não conseguir parsear
+                                if (lf === 'municipio') q = q.like('codigo_ibge', `%${sv}`);
+                                continue;
+                            }
+
+                            if (lf.startsWith('endsWith:')) {
+                                q = q.like(lf.split(':')[1], `%${sv}`);
+                            } else if (lf.startsWith('startsWith:')) {
+                                q = q.like(lf.split(':')[1], `${sv}%`);
+                            } else if (lf.startsWith('like:')) {
+                                q = q.ilike(lf.split(':')[1], `%${sv}%`);
+                            } else {
+                                q = q.eq(lf, sv);
+                            }
                         }
                         try {
-                            const { data } = await q.maybeSingle();
+                            const { data, error } = await q.maybeSingle();
+                            if (error) {
+                                console.error('lookup_composite Supabase error:', error, 'Params:', ck, 'Fields:', sourceRecord);
+                            }
                             finalValue = data
                                 ? data[field.rule.lookupValue]
                                 : (field.rule.lookupFallback ?? null);
-                        } catch {
+                        } catch (e) {
+                            console.error('lookup_composite Exception:', e);
                             finalValue = field.rule.lookupFallback ?? null;
                         }
                     }
@@ -138,6 +348,27 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                     if (finalValue && String(finalValue).length === 8) {
                         const s = String(finalValue);
                         finalValue = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+                    }
+                    break;
+                case 'date_iso':
+                    if (finalValue && typeof finalValue === 'string') {
+                        // Converte 01/01/2026 para 2026-01-01T00:00:00Z
+                        const parts = finalValue.split(/[\/\-]/);
+                        if (parts.length >= 3) {
+                            let day, month, year;
+                            if (parts[0].length === 4) {
+                                // Already YYYY-MM-DD
+                                year = parts[0];
+                                month = parts[1];
+                                day = parts[2];
+                            } else {
+                                // Assuming DD/MM/YYYY
+                                day = parts[0].padStart(2, '0');
+                                month = parts[1].padStart(2, '0');
+                                year = parts[2];
+                            }
+                            finalValue = `${year}-${month}-${day}T00:00:00Z`;
+                        }
                     }
                     break;
                 case 'sap_sequence':
@@ -175,7 +406,10 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
     }
 
     if (sapObject === 'BusinessPartners') {
-        if (!targetRecord.CardCode) targetRecord.CardCode = sourceRecord['a1_cod'] || sourceRecord['A1_COD'];
+        const hasSapSequenceCardCode = mapping.fields.some(f => f.target === 'CardCode' && f.rule?.type === 'sap_sequence');
+        if (!targetRecord.CardCode && !hasSapSequenceCardCode) {
+            targetRecord.CardCode = sourceRecord['a1_cod'] || sourceRecord['A1_COD'];
+        }
 
         if (!targetRecord.CardType) {
             if (mapping.sourceTable.startsWith('SA1')) targetRecord.CardType = 'C';
@@ -201,19 +435,47 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
 export async function POST(request: Request) {
     try {
         const body = await request.json();
-        const { table, limit = 50, offset = 0, duplicateAddress = false, bplId, filters = {} } = body;
+        const { entityId, table, sourceTable, limit = 50, offset = 0, duplicateAddress = false, bplId, filters = {}, excelFilters = [] } = body;
 
         const config = await getConfig();
-        const mappings = await getMappings();
-        const mapping = mappings[table];
+        const supabase = createClient(config.supabase.url, config.supabase.key, { auth: { persistSession: false } });
 
-        if (!mapping) {
-            return NextResponse.json({ success: false, message: 'Mapping not found for table ' + table });
+        let mapping: TableMapping | null = null;
+        let pgTable: string = '';
+
+        if (entityId) {
+            console.log(`[Preview] Fetching mapping for entityId: ${entityId}`);
+            const { data: entity, error: entityErr } = await supabase
+                .from('migration_entities')
+                .select('*')
+                .eq('id', entityId)
+                .single();
+
+            if (!entityErr && entity) {
+                const mappings = await getMappings();
+                if (mappings[`EXCEL_${entityId}`]) {
+                    mapping = mappings[`EXCEL_${entityId}`] as TableMapping;
+                    console.log(`[Preview] Using local mapping.json override for EXCEL_${entityId}`);
+                } else if (entity.mapping_config) {
+                    mapping = entity.mapping_config as TableMapping;
+                }
+                pgTable = entity.staging_table;
+                console.log(`[Preview] Found entity ${entity.name}. Using staging table: ${pgTable}`);
+            } else {
+                console.warn(`[Preview] Entity ${entityId} not found or error:`, entityErr?.message);
+            }
         }
 
-        // 1. Fetch Source Data (Supabase/Postgres)
-        const supabase = createClient(config.supabase.url, config.supabase.key, { auth: { persistSession: false } });
-        const pgTable = table.toLowerCase();
+        if (!mapping) {
+            const mappings = await getMappings();
+            mapping = mappings[table];
+            pgTable = (sourceTable || table).toLowerCase();
+            console.log(`[Preview] Using file-based mapping for ${table}. Table: ${pgTable}`);
+        }
+
+        if (!mapping) {
+            return NextResponse.json({ success: false, message: 'Mapping not found.' }, { status: 404 });
+        }
 
         // ── Filtro por Períodos Contábeis em Aberto (OFPR) ───────────────────────
         // Aplica apenas para SE2010 e SE1010: restringe aos lançamentos cujo
@@ -273,6 +535,25 @@ export async function POST(request: Request) {
             console.log(`[PostingPeriods] Filtrando ${table}.${dateField} entre ${minDate} e ${maxDate}`);
         }
 
+        // ── Filtros dinâmicos para carga de Planilha Excel ────────────────────────
+        // Campos vêm da própria tabela de staging selecionada na UI.
+        if (Array.isArray(excelFilters) && excelFilters.length > 0) {
+            const safeFilters = (excelFilters as ExcelFilter[])
+                .filter(f => f && typeof f.field === 'string' && typeof f.value === 'string')
+                .filter(f => /^[a-zA-Z0-9_]+$/.test(f.field) && f.value.trim() !== '');
+
+            for (const f of safeFilters) {
+                const v = f.value.trim();
+                if (f.operator === 'contains') {
+                    query = query.ilike(f.field, `%${v}%`);
+                } else if (f.operator === 'starts_with') {
+                    query = query.ilike(f.field, `${v}%`);
+                } else {
+                    query = query.eq(f.field, v);
+                }
+            }
+        }
+
         // ── Filtros manuais do usuário (SE2010 / SE1010) ─────────────────────────
         // Mapeamento dos campos de filtro para os campos reais em cada tabela.
         if (POSTING_PERIOD_TABLES.includes(table)) {
@@ -302,13 +583,13 @@ export async function POST(request: Request) {
             if (filters.sapCode) {
                 if (table === 'SE2010') {
                     const jdtNum = Number(filters.sapCode);
-                    if (!isNaN(jdtNum)) query = query.eq('sap_jdt_num', jdtNum);
+                    if (!isNaN(jdtNum)) query = query.eq('__sap_id', jdtNum);
                 }
             }
             // sapStatus: IS NULL / IS NOT NULL — usa .filter() que gera SQL direto no PostgREST
             console.log(`[preview] ${table} filters recebidos:`, JSON.stringify(filters));
-            if (filters.sapStatus === 'null') query = query.filter('sap_jdt_num', 'is', null);
-            if (filters.sapStatus === 'notnull') query = query.filter('sap_jdt_num', 'not.is', null);
+            if (filters.sapStatus === 'null') query = query.filter('__sap_id', 'is', null);
+            if (filters.sapStatus === 'notnull') query = query.filter('__sap_id', 'not.is', null);
 
             const activeFilters = Object.entries(filters).filter(([, v]) => v).map(([k]) => k);
             if (activeFilters.length) console.log(`[Filters] ${table} filtros ativos:`, activeFilters);
@@ -334,12 +615,12 @@ export async function POST(request: Request) {
             if (filters.municipio && cfm.municipio) query = query.ilike(cfm.municipio, `%${filters.municipio}%`);
             if (filters.cgc && cfm.cgc) query = query.ilike(cfm.cgc, `%${filters.cgc}%`);
             if (filters.grupo && cfm.grupo) query = query.eq(cfm.grupo, filters.grupo);
-            // sapCode: busca por valor específico em sap_code
-            if (filters.sapCode) query = query.ilike('sap_code', `%${filters.sapCode}%`);
+            // sapCode: busca por valor específico em __sap_id
+            if (filters.sapCode) query = query.ilike('__sap_id', `%${filters.sapCode}%`);
             // sapStatus: IS NULL / IS NOT NULL
             console.log(`[preview] ${table} filters recebidos:`, JSON.stringify(filters));
-            if (filters.sapStatus === 'null') query = query.filter('sap_code', 'is', null);
-            if (filters.sapStatus === 'notnull') query = query.filter('sap_code', 'not.is', null);
+            if (filters.sapStatus === 'null') query = query.filter('__sap_id', 'is', null);
+            if (filters.sapStatus === 'notnull') query = query.filter('__sap_id', 'not.is', null);
 
             const activeFilters = Object.entries(filters).filter(([, v]) => v).map(([k]) => k);
             if (activeFilters.length) console.log(`[Filters] ${table} filtros ativos:`, activeFilters);
@@ -361,23 +642,27 @@ export async function POST(request: Request) {
 
         // Authenticate SAP once
         console.log('Attempting SAP Login at:', `${config.sap.serviceLayerUrl}/Login`);
-        const loginRes = await fetch(`${config.sap.serviceLayerUrl}/Login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                CompanyDB: config.sap.companyDB,
-                UserName: config.sap.userName,
-                Password: config.sap.password
-            })
-        });
-
         let cookies = '';
-        if (loginRes.ok) {
-            const setCookie = loginRes.headers.get('set-cookie');
-            if (setCookie) cookies = setCookie;
-            console.log('SAP Login Successful.');
-        } else {
-            console.error('SAP Login Failed:', await loginRes.text());
+        let loginRes: Response | undefined;
+        try {
+            loginRes = await fetch(`${config.sap.serviceLayerUrl}/Login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    CompanyDB: config.sap.companyDB,
+                    UserName: config.sap.userName,
+                    Password: config.sap.password
+                })
+            });
+            if (loginRes.ok) {
+                const setCookie = loginRes.headers.get('set-cookie');
+                if (setCookie) cookies = setCookie;
+                console.log('SAP Login Successful.');
+            } else {
+                console.error('SAP Login Failed:', await loginRes.text());
+            }
+        } catch (loginErr: any) {
+            console.error('SAP Login Fetch Error (network unreachable?):', loginErr.message);
         }
 
         // Pre-resolve SAP sequences for fields with 'sap_sequence' rule
@@ -389,7 +674,8 @@ export async function POST(request: Request) {
                     const cacheKey = `${field.rule.objectType}::${field.rule.seriesCode ?? 'default'}`;
                     if (!(cacheKey in sapSequenceCache)) {
 
-                        if (field.rule.objectType === 'bp_customer' || field.rule.objectType === 'bp_supplier') {
+                        const isLegacyBP = field.rule.objectType === 'bp_customer' || field.rule.objectType === 'bp_supplier';
+                        if (isLegacyBP && !field.rule.seriesCode) {
                             const cardType = field.rule.objectType === 'bp_customer' ? 'C' : 'S';
                             const prefix = field.rule.objectType === 'bp_customer' ? 'C' : 'F';
 
@@ -420,7 +706,16 @@ export async function POST(request: Request) {
 
                         } else {
                             try {
-                                const seriesPayload: any = { DocumentTypeParams: { Document: field.rule.objectType } };
+                                let sapDoc = field.rule.objectType;
+                                let sapSubType = undefined;
+                                if (sapDoc === 'bp_supplier') { sapDoc = '2'; sapSubType = 'S'; }
+                                else if (sapDoc === 'bp_customer') { sapDoc = '2'; sapSubType = 'C'; }
+
+                                const seriesPayload: any = { DocumentTypeParams: { Document: sapDoc } };
+                                if (sapSubType) {
+                                    seriesPayload.DocumentTypeParams.DocumentSubType = sapSubType;
+                                }
+
                                 const seriesRes = await fetch(`${config.sap.serviceLayerUrl}/SeriesService_GetDocumentSeries`, {
                                     method: 'POST',
                                     headers: { 'Cookie': cookies, 'Content-Type': 'application/json' },
@@ -430,12 +725,23 @@ export async function POST(request: Request) {
                                     const seriesJson = await seriesRes.json();
                                     const seriesList: any[] = seriesJson.value || [];
                                     let chosenSeries = seriesList.find((s: any) => s.IsDefault === 'tYES');
-                                    if (field.rule.seriesCode !== undefined) {
-                                        const override = seriesList.find((s: any) => s.Series === field.rule!.seriesCode);
+                                    if (field.rule.seriesCode !== undefined && field.rule.seriesCode !== null) {
+                                        const override = seriesList.find((s: any) => String(s.Series) === String(field.rule!.seriesCode));
                                         if (override) chosenSeries = override;
                                     }
-                                    sapSequenceCache[cacheKey] = chosenSeries ? chosenSeries.NextNumber : null;
-                                    console.log(`[sap_sequence] ObjectType ${field.rule.objectType} next number: ${sapSequenceCache[cacheKey]}`);
+                                    
+                                    if (chosenSeries && chosenSeries.NextNumber !== undefined && chosenSeries.NextNumber !== null) {
+                                        let nextStr = String(chosenSeries.NextNumber);
+                                        if (chosenSeries.NumSize && chosenSeries.NumSize > 0) {
+                                            nextStr = nextStr.padStart(chosenSeries.NumSize, '0');
+                                        }
+                                        const prefix = chosenSeries.BeginStr || '';
+                                        const suffix = chosenSeries.EndStr || '';
+                                        sapSequenceCache[cacheKey] = `${prefix}${nextStr}${suffix}` as any;
+                                    } else {
+                                        sapSequenceCache[cacheKey] = null;
+                                    }
+                                    console.log(`[sap_sequence] ObjectType ${field.rule.objectType} next number resolved: ${sapSequenceCache[cacheKey]}`);
                                 } else {
                                     sapSequenceCache[cacheKey] = null;
                                 }
@@ -474,7 +780,9 @@ export async function POST(request: Request) {
         // Transform all rows
         const transformedRows: any[] = [];
         for (const row of sourceData) {
-            const targetRec = await transformRecord(row, mapping, supabase, duplicateAddress);
+            const transformed = await transformRecord(row, mapping, supabase, duplicateAddress);
+            const normalized = normalizeTargetPayloadKeys(transformed, mapping.targetObject);
+            const targetRec = ensureMandatoryPayloadFields(normalized, row, mapping.targetObject, mapping);
 
             // ── Special post-transform for JournalEntries (SE2010 → LCM) ──
             if (mapping.targetObject === 'JournalEntries') {
@@ -512,22 +820,22 @@ export async function POST(request: Request) {
 
                 // ── Resolve CardCode do fornecedor ───────────────────────────────
                 // Estratégia em cascata:
-                //   0. sap_code já gravado em sa2010 (write-back) — mais rápido
+                //   0. __sap_id já gravado em sa2010 (write-back) — mais rápido
                 //   1. Tenta 'F' + fornCode.padStart(6,'0') — para códigos numéricos
                 //   2. Tenta lookup por CNPJ: sa2010.a2_cgc → SAP FederalTaxID
                 let cardCode: string | undefined = undefined;
 
                 if (fornCode) {
-                    // Opção 0: sap_code já salvo em sa2010
+                    // Opção 0: __sap_id já salvo em sa2010
                     try {
                         const { data: sa2Row0 } = await supabase
                             .from('sa2010')
-                            .select('sap_code')
+                            .select('__sap_id')
                             .eq('a2_cod', fornCode)
                             .maybeSingle();
-                        if (sa2Row0?.sap_code) {
-                            cardCode = sa2Row0.sap_code.toString().trim();
-                            console.log(`[SE2010] BP via sap_code para ${fornCode}: ${cardCode}`);
+                        if (sa2Row0?.__sap_id) {
+                            cardCode = sa2Row0.__sap_id.toString().trim();
+                            console.log(`[SE2010] BP via __sap_id para ${fornCode}: ${cardCode}`);
                         }
                     } catch { /* skip */ }
                 }
@@ -817,6 +1125,11 @@ export async function POST(request: Request) {
                                     item.target[field.target] = numVal;
                                     sapSequenceCache[cacheKey] = (numVal + 1) as any;
                                 }
+                                
+                                // Explicitly inject the Series property so SAP registers the document to the right sequence
+                                if (field.rule.seriesCode !== undefined && field.rule.seriesCode !== null) {
+                                    item.target['Series'] = field.rule.seriesCode;
+                                }
                             }
                         }
                     }
@@ -840,7 +1153,7 @@ export async function POST(request: Request) {
             //   SE1010: CLIENTE/PREFIXO/NUMERO/PARCELA/TIPO
             //
             // Estratégia em cascata:
-            //   1. Primário: sap_jdt_num/sap_doc_entry gravado no Supabase (write-back) — rápido
+            //   1. Primário: __sap_id / sap_doc_entry gravado no Supabase (write-back) — rápido
             //   2. Fallback: busca por Reference2 no SAP — mais preciso que Memo
 
             const pgTable = table.toLowerCase();  // se2010 ou se1010
@@ -848,20 +1161,20 @@ export async function POST(request: Request) {
 
             const fullKeyToSapNum: Record<string, number> = {};
 
-            // ── 1. Primário: sap_jdt_num no Supabase ─────────────────────────────
+            // ── 1. Primário: __sap_id no Supabase ─────────────────────────────
             const recnosToCheck = sourceData.map((r: any) => r.r_e_c_n_o_).filter(Boolean);
             if (recnosToCheck.length > 0) {
                 try {
                     const { data: jdtRows } = await supabase
                         .from(pgTable)
-                        .select('r_e_c_n_o_, sap_jdt_num')
+                        .select('r_e_c_n_o_, __sap_id')
                         .in('r_e_c_n_o_', recnosToCheck)
-                        .not('sap_jdt_num', 'is', null);
+                        .not('__sap_id', 'is', null);
 
                     const recnoToJdtNum: Record<number, number> = {};
                     (jdtRows || []).forEach((row: any) => {
-                        if (row.r_e_c_n_o_ && row.sap_jdt_num) {
-                            recnoToJdtNum[row.r_e_c_n_o_] = row.sap_jdt_num;
+                        if (row.r_e_c_n_o_ && row.__sap_id) {
+                            recnoToJdtNum[row.r_e_c_n_o_] = row.__sap_id;
                         }
                     });
 
@@ -873,9 +1186,9 @@ export async function POST(request: Request) {
                             if (fk) fullKeyToSapNum[fk] = jdtNum;
                         }
                     });
-                    console.log(`[${pgTable} dedup] sap_jdt_num encontrados: ${Object.keys(fullKeyToSapNum).length}/${transformedRows.length}`);
+                    console.log(`[${pgTable} dedup] __sap_id encontrados: ${Object.keys(fullKeyToSapNum).length}/${transformedRows.length}`);
                 } catch (e) {
-                    console.warn(`[${pgTable} dedup] Erro ao buscar sap_jdt_num:`, e);
+                    console.warn(`[${pgTable} dedup] Erro ao buscar __sap_id:`, e);
                 }
             }
 
@@ -1001,6 +1314,9 @@ export async function POST(request: Request) {
                 'Items': 'ItemCode',
                 'Invoices': 'DocEntry',
                 'PurchaseInvoices': 'DocEntry',
+                'ChartOfAccounts': 'Code',
+                'BusinessPartners': 'CardCode',
+                'BusinessPartnerGroups': 'Code',
             };
             const keyField = keyFieldMap[mapping.targetObject] || 'CardCode';
 
@@ -1037,9 +1353,24 @@ export async function POST(request: Request) {
                 }
             }
 
+            const bgUpdates: Promise<any>[] = [];
+
             transformedRows.forEach(item => {
                 const key = item.target[keyField];
                 const exists = key && existingKeys.has(String(key));
+
+                if (exists && item.source) {
+                    const pkField = item.source.r_e_c_n_o_ ? 'r_e_c_n_o_' : 'id';
+                    const stagingId = item.source[pkField];
+                    if (stagingId) {
+                        if (sourceTable.startsWith('EXCEL_') && !item.source.__sap_id) {
+                            bgUpdates.push(supabase.from(sourceTable).update({ __sap_id: String(key) }).eq(pkField, stagingId) as unknown as Promise<any>);
+                        } else if (!sourceTable.startsWith('EXCEL_') && !item.source.sap_code && !['SE1010', 'SE2010'].includes(sourceTable)) {
+                            bgUpdates.push(supabase.from(sourceTable).update({ sap_code: String(key) }).eq(pkField, stagingId) as unknown as Promise<any>);
+                        }
+                    }
+                }
+
                 results.push({
                     source: item.source,
                     target: item.target,
@@ -1048,6 +1379,10 @@ export async function POST(request: Request) {
                     message: (!exists && batchDebugMsg) ? batchDebugMsg : undefined
                 });
             });
+
+            if (bgUpdates.length > 0) {
+                 Promise.allSettled(bgUpdates).catch(e => console.error('[Preview] Failed to update staging keys:', e));
+            }
         }
 
         return NextResponse.json({

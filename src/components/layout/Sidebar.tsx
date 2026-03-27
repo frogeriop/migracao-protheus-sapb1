@@ -2,20 +2,21 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Database, Layers, Settings, Home, Play, Users, ArrowLeftRight, BookOpen, RadioTower, Trash2 } from 'lucide-react';
+import { Database, Layers, Settings, Home, Play, Users, ArrowLeftRight, BookOpen, RadioTower, Trash2, CheckSquare } from 'lucide-react';
 import styles from './Layout.module.css';
 
 const navItems = [
   { name: 'Dashboard', href: '/', icon: Home },
   { name: 'Configurações', href: '/settings', icon: Settings },
-  { name: 'Seleção de Tabelas', href: '/settings/tables', icon: Layers },
   { name: 'Mapeamento (De/Para)', href: '/settings/mapping', icon: ArrowLeftRight },
-  { name: 'Naturezas (SED010)', href: '/settings/naturezas', icon: BookOpen },
-  { name: 'Dados Replicados', href: '/data', icon: Database },
-  { name: 'SAP: Parceiros', href: '/sap/business-partners', icon: Users },
-  { name: 'SAP: Cancelar/Excluir', href: '/sap/delete', icon: Trash2 },
-  { name: 'Migração', href: '/run', icon: Play },
+  { name: 'Importação de Dados (Staging)', href: '/settings/tables', icon: Layers },
+  { name: 'Conferência de Dados Importados (Staging)', href: '/data', icon: Database },
+  { name: 'Migração de Dados', href: '/run', icon: Play },
+  { name: 'Conferência de Dados Migrados', href: '/settings/sap-reference', icon: CheckSquare },
   { name: 'Control Tower 🔒', href: '/control-tower', icon: RadioTower },
+  { name: 'Naturezas (SED010)', href: '/settings/naturezas', icon: BookOpen },
+  { name: 'SAP: Cancelar/Excluir', href: '/sap/delete', icon: Trash2 },
+  { name: 'SAP: Parceiros', href: '/sap/business-partners', icon: Users },
 ];
 
 

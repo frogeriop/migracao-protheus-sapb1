@@ -61,7 +61,7 @@ async function cancelOrder(serviceLayerUrl: string, cookieStr: string, docEntry:
  * {
  *   docEntries: number[]        // Lista de DocEntry
  *   cancelFirst?: boolean       // Cancela antes de excluir (default: true)
- *   clearWriteback?: boolean    // Zera sap_jdt_num no Supabase (default: true)
+ *   clearWriteback?: boolean    // Zera __sap_id no Supabase (default: true)
  *   sourceTable?: string        // Tabela Supabase para write-back
  * }
  *
@@ -150,7 +150,7 @@ export async function POST(request: Request) {
             }
         }
 
-        // Write-back: zera sap_jdt_num no Supabase para os excluídos com sucesso
+        // Write-back: zera __sap_id no Supabase para os excluídos com sucesso
         const deletedEntries = results.filter(r => r.status === 'deleted').map(r => r.docEntry);
         let writebackCleared = 0;
 
@@ -161,8 +161,8 @@ export async function POST(request: Request) {
                 // Zera TODOS os registros da tabela de uma vez
                 const { error, count } = await supabase
                     .from(sourceTable)
-                    .update({ sap_jdt_num: null })
-                    .not('sap_jdt_num', 'is', null);
+                    .update({ __sap_id: null })
+                    .not('__sap_id', 'is', null);
                 if (error) {
                     console.warn(`[delete-orders] write-back all clear failed for ${sourceTable}:`, error.message);
                 } else {
@@ -171,15 +171,15 @@ export async function POST(request: Request) {
             } else {
                 const { error, count } = await supabase
                     .from(sourceTable)
-                    .update({ sap_jdt_num: null })
-                    .in('sap_jdt_num', deletedEntries);
+                    .update({ __sap_id: null })
+                    .in('__sap_id', deletedEntries);
                 if (error) {
                     console.warn(`[delete-orders] write-back clear failed for ${sourceTable}:`, error.message);
                 } else {
                     writebackCleared = count ?? 0;
                 }
             }
-            console.log(`[delete-orders] write-back: ${writebackCleared} registros de ${sourceTable} tiveram sap_jdt_num zerado.`);
+            console.log(`[delete-orders] write-back: ${writebackCleared} registros de ${sourceTable} tiveram __sap_id zerado.`);
         }
 
         const errors = results.filter(r => r.status === 'error');
