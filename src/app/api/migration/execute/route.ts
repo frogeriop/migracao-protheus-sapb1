@@ -132,8 +132,8 @@ export async function POST(request: Request) {
                         const ibgeStr = String(addr.County);
                         let translated = false;
 
-                        // 1. OData Fallback First (Safest method - assumes Code is the IBGE or Internal Code like '921')
-                        const oDataRes = await fetch(`${config.sap.serviceLayerUrl}/Counties?$select=AbsId,Code,Name&$filter=Code eq '${ibgeStr}'`, {
+                        // 1. Pesquisa OData no campo 'IbgeCode' (Padrão para localizações B1 brasileiras mais recentes)
+                        let oDataRes = await fetch(`${config.sap.serviceLayerUrl}/Counties?$select=AbsId,Code,Name,IbgeCode&$filter=IbgeCode eq '${ibgeStr}'`, {
                             headers: { 'Cookie': cookies || '' }
                         });
                         
@@ -142,36 +142,21 @@ export async function POST(request: Request) {
                             if (oData.value && oData.value.length > 0) {
                                 addr.County = String(oData.value[0].AbsId);
                                 translated = true;
-                                console.log(`[execute] OData Transformed IBGE ${ibgeStr} -> OCNT.AbsId ${addr.County} (${oData.value[0].Name})`);
+                                console.log(`[execute] OData Transformed IBGE ${ibgeStr} (via IbgeCode) -> OCNT.AbsId ${addr.County} (${oData.value[0].Name})`);
                             }
                         }
 
-                        // 2. Aggressive SQLQueries if OData failed (Try matching IbgeCode column if standard Code didn't match)
+                        // 2. Pesquisa fallback no campo 'Code' (Padrão para Add-ons customizados ou implantações antigas)
                         if (!translated) {
-                            const qryCode = 'QRY_GET_COUNTY';
-                            try { await fetch(`${config.sap.serviceLayerUrl}/SQLQueries('${qryCode}')`, { method: 'DELETE', headers: { Cookie: cookies || '' } }); } catch {}
-                            
-                            const qryRes = await fetch(`${config.sap.serviceLayerUrl}/SQLQueries`, {
-                                method: 'POST',
-                                headers: { 'Cookie': cookies || '', 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    SqlCode: qryCode,
-                                    SqlName: "Get County IBGE",
-                                    SqlText: `SELECT "AbsId" FROM "OCNT" WHERE "IbgeCode" = '${ibgeStr}'`
-                                })
+                            oDataRes = await fetch(`${config.sap.serviceLayerUrl}/Counties?$select=AbsId,Code,Name,IbgeCode&$filter=Code eq '${ibgeStr}'`, {
+                                headers: { 'Cookie': cookies || '' }
                             });
-
-                            if (qryRes.ok) {
-                                const countyRes = await fetch(`${config.sap.serviceLayerUrl}/SQLQueries('${qryCode}')/List`, {
-                                    headers: { 'Cookie': cookies || '' }
-                                });
-                                if (countyRes.ok) {
-                                    const countyData = await countyRes.json();
-                                    if (countyData.value && countyData.value.length > 0) {
-                                        addr.County = String(countyData.value[0].AbsId);
-                                        translated = true;
-                                        console.log(`[execute] SQLQueries Transformed IBGE ${ibgeStr} -> OCNT.AbsId ${addr.County}`);
-                                    }
+                            if (oDataRes.ok) {
+                                const oData = await oDataRes.json();
+                                if (oData.value && oData.value.length > 0) {
+                                    addr.County = String(oData.value[0].AbsId);
+                                    translated = true;
+                                    console.log(`[execute] OData Transformed IBGE ${ibgeStr} (via Code) -> OCNT.AbsId ${addr.County} (${oData.value[0].Name})`);
                                 }
                             }
                         }
@@ -339,58 +324,79 @@ export async function POST(request: Request) {
                     // updatePayload.FederalTaxID já está presente — não remover.
 
                     // ── BPFiscalTaxIDCollection (CRD7): PATCH inteligente ────────────
-                    // Só envia linhas cujo TaxId está VAZIO ou DIFERENTE no SAP atual.
-                    // Evita erro "duplicate key" (chave composta AddressName+AddrType).
                     if (updatePayload.BPFiscalTaxIDCollection && Array.isArray(updatePayload.BPFiscalTaxIDCollection)) {
                         const existingFiscal: any[] = currentBP.BPFiscalTaxIDCollection || [];
-
-                        const hasData = (v: any) => v !== null && v !== undefined && String(v).trim() !== '';
-
-                        // Filtra: só mantém entradas cujo campo esteja vazio no SAP atual
-                        const filteredFiscal = updatePayload.BPFiscalTaxIDCollection.filter((newRow: any) => {
-                            // Para cada TaxId field no new row
-                            for (const field of ['TaxId0', 'TaxId1', 'TaxId2', 'TaxId3', 'TaxId4', 'CNAECode']) {
-                                if (!hasData(newRow[field])) continue;
-                                // Verifica se o SAP já tem valor para este campo
-                                const existing = existingFiscal[0]; // CRD7 tem geralmente 1 linha por BP
-                                if (existing && hasData(existing[field])) {
-                                    // SAP já tem valor — verificar se é diferente
-                                    if (String(existing[field]).trim() !== String(newRow[field]).trim()) {
-                                        console.log(`[execute] CRD7 ${field}: SAP="${existing[field]}" → novo="${newRow[field]}" — inclui no PATCH`);
-                                        return true; // valor diferente → atualiza
-                                    } else {
-                                        return false; // igual → não envia (evita erro)
+                        const newBPFiscal = JSON.parse(JSON.stringify(existingFiscal));
+                        let hasFiscalChanges = false;
+                        
+                        updatePayload.BPFiscalTaxIDCollection.forEach((fiscal: any) => {
+                            const paramsAddr = fiscal.Address || "";
+                            const existingIndex = newBPFiscal.findIndex((e: any) => (e.Address || "") === paramsAddr);
+                            
+                            if (existingIndex !== -1) {
+                                let localChanges = false;
+                                for (const key of Object.keys(fiscal)) {
+                                    if (key !== 'Address' && String(fiscal[key]) !== String(newBPFiscal[existingIndex][key])) {
+                                        newBPFiscal[existingIndex][key] = fiscal[key];
+                                        localChanges = true;
+                                        console.log(`[execute] CRD7 mudou ${key}: SAP="${newBPFiscal[existingIndex][key]}" → novo="${fiscal[key]}"`);
                                     }
                                 }
-                                return true; // SAP vazio → envia
+                                if (localChanges) hasFiscalChanges = true;
+                            } else {
+                                newBPFiscal.push(fiscal);
+                                hasFiscalChanges = true;
+                                console.log(`[execute] CRD7 PATCH: novo registro fiscal incluído.`);
                             }
-                            return false;
                         });
 
-                        if (filteredFiscal.length > 0) {
-                            updatePayload.BPFiscalTaxIDCollection = filteredFiscal;
-                            console.log(`[execute] CRD7 PATCH: ${filteredFiscal.length} linha(s) incluída(s) para ${key}`);
+                        if (hasFiscalChanges) {
+                            updatePayload.BPFiscalTaxIDCollection = newBPFiscal;
                         } else {
                             delete updatePayload.BPFiscalTaxIDCollection;
                             console.log(`[execute] CRD7 PATCH: nenhuma atualização necessária para ${key}`);
                         }
                     }
 
-                    // ── BPAddresses (CRD1): só envia se o BP ainda não tem endereços ──
-                    // CRD1 não tem campo de CNPJ — apenas endereço físico.
-                    const existingAddresses: any[] = currentBP.BPAddresses || [];
-                    if (existingAddresses.length > 0) {
-                        delete updatePayload.BPAddresses;
-                    } else {
-                        const seenNames = new Set<string>();
-                        if (updatePayload.BPAddresses && Array.isArray(updatePayload.BPAddresses)) {
-                            updatePayload.BPAddresses = updatePayload.BPAddresses.filter((addr: any) => {
-                                const name = addr.AddressName || (addr.AddressType === 'bo_BillTo' ? 'Cobranca' : 'Entrega');
-                                addr.AddressName = name;
-                                if (seenNames.has(name)) return false;
-                                seenNames.add(name);
-                                return true;
-                            });
+                    // ── BPAddresses (CRD1): Atualização completa via Merge ──
+                    if (updatePayload.BPAddresses && Array.isArray(updatePayload.BPAddresses)) {
+                        const existingAddresses: any[] = currentBP.BPAddresses || [];
+                        const newBPAddresses = JSON.parse(JSON.stringify(existingAddresses));
+                        let hasAddressChanges = false;
+
+                        updatePayload.BPAddresses.forEach((addr: any) => {
+                            const name = addr.AddressName || (addr.AddressType === 'bo_BillTo' ? 'Cobranca' : 'Entrega');
+                            addr.AddressName = name; // Garante primary key
+
+                            const existingIndex = newBPAddresses.findIndex((e: any) => e.AddressName === name);
+                            
+                            if (existingIndex !== -1) {
+                                let localChanges = false;
+                                for (const field of Object.keys(addr)) {
+                                    if (field !== 'AddressName' && field !== 'RowNum') {
+                                        const v1 = addr[field] !== undefined && addr[field] !== null ? String(addr[field]).trim() : '';
+                                        const v2 = newBPAddresses[existingIndex][field] !== undefined && newBPAddresses[existingIndex][field] !== null ? String(newBPAddresses[existingIndex][field]).trim() : '';
+                                        
+                                        if (v1 !== v2) {
+                                            newBPAddresses[existingIndex][field] = addr[field];
+                                            localChanges = true;
+                                            console.log(`[execute] CRD1 mudou ${field}: SAP="${v2}" → novo="${v1}"`);
+                                        }
+                                    }
+                                }
+                                if (localChanges) hasAddressChanges = true;
+                            } else {
+                                // Novo endereço
+                                newBPAddresses.push(addr);
+                                hasAddressChanges = true;
+                            }
+                        });
+                        
+                        if (hasAddressChanges) {
+                            updatePayload.BPAddresses = newBPAddresses;
+                        } else {
+                            delete updatePayload.BPAddresses;
+                            console.log(`[execute] CRD1 PATCH: nenhuma atualização necessária para endereços`);
                         }
                     }
                 } else {
@@ -407,9 +413,16 @@ export async function POST(request: Request) {
                 // FederalTaxID mantido mesmo no fallback (campo simples OCRD)
             }
 
+            const reqHeaders: any = { 'Cookie': cookies || '', 'Content-Type': 'application/json' };
+            if (targetObject === 'BusinessPartners' && (updatePayload.BPAddresses || updatePayload.BPFiscalTaxIDCollection)) {
+                // Habilitando a substituição total de coleções
+                // Isso resolve a falha (ODBC -2035) permitindo que enviemos AddressName tranquilamente
+                reqHeaders['B1S-ReplaceCollectionsOnPatch'] = 'true';
+            }
+
             response = await fetch(`${config.sap.serviceLayerUrl}/${targetObject}('${key}')`, {
                 method: 'PATCH',
-                headers: { 'Cookie': cookies || '', 'Content-Type': 'application/json' },
+                headers: reqHeaders,
                 body: JSON.stringify(updatePayload)
             });
 

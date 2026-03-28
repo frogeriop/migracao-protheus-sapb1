@@ -147,6 +147,10 @@
       {
         "source": "a1_est",
         "target": "BPAddresses.State"
+      },
+      {
+        "source": "a1_nreduz",
+        "target": "AliasName"
       }
     ]
   },
@@ -275,6 +279,10 @@
           "objectType": "bp_supplier",
           "seriesCode": 71
         }
+      },
+      {
+        "source": "a2_nreduz",
+        "target": "AliasName"
       }
     ]
   },

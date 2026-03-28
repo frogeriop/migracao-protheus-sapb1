@@ -172,7 +172,7 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
         if (!field.target) continue;
 
         // Para tipo 'static', 'expression' ou 'sap_sequence', source não é obrigatório
-        const isSourceOptional = field.rule?.type === 'static' || field.rule?.type === 'sap_sequence' || field.rule?.type === 'expression';
+        const isSourceOptional = field.rule?.type === 'static' || field.rule?.type === 'sap_sequence' || field.rule?.type === 'expression' || field.rule?.type === 'lookup_composite';
         if (!isSourceOptional && !field.source) continue;
 
         let originalValue = field.source
@@ -190,7 +190,7 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
         }
 
         // Pula registros sem valor de origem APENAS para regras que exigem origem
-        if (!isSourceOptional && (originalValue === undefined || originalValue === null)) continue;
+        if (!isSourceOptional && (originalValue === undefined || originalValue === null || String(originalValue).trim() === '')) continue;
 
         let finalValue: any = typeof originalValue === 'string' ? originalValue.trim() : originalValue;
 
@@ -223,17 +223,14 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                         finalValue = true;
                     } else if (raw === 'false') {
                         finalValue = false;
-                    } else if (!isNaN(Number(raw)) && raw.trim() !== '') {
-                        finalValue = Number(raw);
-                    } else {
-                        finalValue = raw;
-                    }
+                    } else (!isNaN(Number(raw)) && raw.trim() !== '') ?
+                        finalValue = Number(raw) : finalValue = raw;
                     console.log(`[static] → finalValue=${JSON.stringify(finalValue)}`);
                     break;
                 }
                 case 'expression': {
                     if (field.rule.expression) {
-                        finalValue = field.rule.expression.replace(/\{([^}]+)\}/g, (_, key) => {
+                        finalValue = field.rule.expression.replace(/\{([^}]+)\}/g, (_: string, key: string) => {
                             const val = sourceRecord[key] ?? sourceRecord[key.toUpperCase()] ?? sourceRecord[key.toLowerCase()] ?? sourceRecord[normalizeKey(key)];
                             return val !== undefined && val !== null ? String(val).trim() : '';
                         });
@@ -241,13 +238,13 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                     break;
                 }
                 case 'map':
-                    const mapEntry = field.rule.map?.find(m => m.from == originalValue);
+                    const mapEntry = field.rule.map?.find((m: any) => m.from == originalValue);
                     if (mapEntry) finalValue = mapEntry.to;
                     break;
                 case 'address_part':
                     const parts = TransformationUtils.parseAddress(originalValue);
-                    if (field.rule.part && parts[field.rule.part]) {
-                        finalValue = parts[field.rule.part];
+                    if (field.rule.part && parts[field.rule.part as keyof typeof parts]) {
+                        finalValue = parts[field.rule.part as keyof typeof parts];
                     } else {
                         finalValue = '';
                     }
@@ -293,10 +290,12 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                                 'MS':'50', 'MT':'51', 'GO':'52', 'DF':'53'
                             };
 
-                            if (field.rule.lookupTable === 'ibge_municipios' && (lf === 'uf' || lf === 'municipio')) {
+                            const isIbgeTarget = lf === 'uf' || lf === 'municipio' || lf.includes('codigo_ibge');
+                            if (field.rule.lookupTable === 'ibge_municipios' && isIbgeTarget) {
                                 // Extract the UF state code from ck
                                 const ufIndex = ck.lookupKeyFields.indexOf('uf');
-                                const munIndex = ck.lookupKeyFields.indexOf('municipio');
+                                let munIndex = ck.lookupKeyFields.indexOf('municipio');
+                                if (munIndex === -1) munIndex = ck.lookupKeyFields.findIndex((f: string) => f.includes('codigo_ibge'));
                                 
                                 if (ufIndex !== -1 && munIndex !== -1) {
                                     const rawUf = sourceRecord[ck.sourceFields[ufIndex]] || sourceRecord[normalizeKey(ck.sourceFields[ufIndex])] || '';
@@ -315,7 +314,7 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                                 }
                                 
                                 // Fallback se não conseguir parsear
-                                if (lf === 'municipio') q = q.like('codigo_ibge', `%${sv}`);
+                                if (lf !== 'uf') q = q.like('codigo_ibge', `%${sv}`);
                                 continue;
                             }
 
@@ -419,6 +418,11 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
         if (targetRecord.BPAddresses && targetRecord.BPAddresses.length > 0) {
             if (!targetRecord.BPAddresses[0].AddressName) targetRecord.BPAddresses[0].AddressName = "Cobranca";
             targetRecord.BPAddresses[0].AddressType = "bo_BillTo";
+            
+            // Fix for Protheus country code (105 = Brazil in Siscomex) mapped to SAP format (BR)
+            if (targetRecord.BPAddresses[0].Country === '105') {
+                targetRecord.BPAddresses[0].Country = 'BR';
+            }
 
             if (duplicateAddress) {
                 const copy = { ...targetRecord.BPAddresses[0] };

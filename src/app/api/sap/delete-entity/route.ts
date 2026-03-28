@@ -53,18 +53,44 @@ export async function POST(request: Request) {
 
         let discoveredTargetColumn = '__sap_id';
 
+        // Helper to resolve schema safely
+        let targetSchema = 'public';
+        let targetTable = sourceTable ?? '';
+        
+        if (sourceTable) {
+            if (sourceTable.includes('.')) {
+                [targetSchema, targetTable] = sourceTable.split('.');
+            } else if (sourceTable.startsWith('protheus_') || sourceTable.startsWith('stg_')) {
+                // Determine actual schema dynamically based on what's configured, but 'stg_' might be in public.
+                // We'll leave it public by default except if it's a known staging table.
+            }
+        }
+        
+        async function fetchFromSource(queryColumn: string) {
+            let res = await supabase.schema(targetSchema).from(targetTable).select(queryColumn).not(queryColumn, 'is', null);
+            // Fallback to 'staging' schema if not found in public
+            if (res.error && res.error.message.includes('does not exist') && targetSchema === 'public') {
+                targetSchema = 'staging';
+                res = await supabase.schema(targetSchema).from(targetTable).select(queryColumn).not(queryColumn, 'is', null);
+            }
+            return res;
+        }
+
+        async function probeSource(queryColumn: string) {
+            let res = await supabase.schema(targetSchema).from(targetTable).select(queryColumn).limit(1);
+            if (res.error && res.error.message.includes('does not exist') && targetSchema === 'public') {
+                targetSchema = 'staging';
+                res = await supabase.schema(targetSchema).from(targetTable).select(queryColumn).limit(1);
+            }
+            return res;
+        }
+
         if (deleteAllFromTable && sourceTable) {
-            let { data, error } = await supabase
-                .from(sourceTable)
-                .select(discoveredTargetColumn)
-                .not(discoveredTargetColumn, 'is', null);
+            let { data, error } = await fetchFromSource(discoveredTargetColumn);
 
             if (error && error.message.includes('does not exist')) {
                 discoveredTargetColumn = 'sap_code';
-                const retry = await supabase
-                    .from(sourceTable)
-                    .select(discoveredTargetColumn)
-                    .not(discoveredTargetColumn, 'is', null);
+                const retry = await fetchFromSource(discoveredTargetColumn);
                 data = retry.data;
                 error = retry.error;
             }
@@ -76,8 +102,7 @@ export async function POST(request: Request) {
             keys = data!.map((r: any) => r[discoveredTargetColumn]).filter(Boolean);
             console.log(`[delete-entity] Encontradas ${keys.length} chaves para deletar de ${sourceTable}`);
         } else if (sourceTable) {
-            // Apenas para descobrir a coluna target se necessário pro writeback
-            const { error } = await supabase.from(sourceTable).select('__sap_id').limit(1);
+            const { error } = await probeSource('__sap_id');
             if (error && error.message.includes('does not exist')) {
                 discoveredTargetColumn = 'sap_code';
             }
@@ -128,8 +153,8 @@ export async function POST(request: Request) {
         let writebackCleared = 0;
 
         if (clearWriteback && deletedKeys.length > 0 && sourceTable) {
-            const { error, count } = await supabase
-                .from(sourceTable)
+            const { error, count } = await supabase.schema(targetSchema)
+                .from(targetTable)
                 .update({ [discoveredTargetColumn]: null })
                 .in(discoveredTargetColumn, deletedKeys);
 

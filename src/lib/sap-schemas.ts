@@ -12,7 +12,7 @@ export const SAP_SCHEMAS: Record<string, SapEntitySchema> = {
         label: 'Parceiros de Negócio',
         identifyingFields: ['CardCode', 'CardName', 'CardType'],
         templateFields: [
-            'CardCode', 'CardName', 'CardType', 'GroupCode', 'FederalTaxID', 
+            'CardCode', 'CardName', 'AliasName', 'CardType', 'GroupCode', 'FederalTaxID', 
             'EmailAddress', 'Phone1', 'BPAddresses.AddressName', 'BPAddresses.AddressType',
             'BPAddresses.Street', 'BPAddresses.StreetNo', 'BPAddresses.Block', 
             'BPAddresses.ZipCode', 'BPAddresses.City', 'BPAddresses.U_TX_CNAE'

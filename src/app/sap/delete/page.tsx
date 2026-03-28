@@ -10,7 +10,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
-type DocMode = 'orders' | 'journal-entries' | 'chart-of-accounts' | 'business-partners' | 'items' | 'profit-centers';
+type DocMode = 'orders' | 'journal-entries' | 'chart-of-accounts' | 'business-partners' | 'items' | 'profit-centers' | 'bp-addresses-fiscal';
 type Scope = 'list' | 'all';
 
 interface SseEvent {
@@ -277,7 +277,7 @@ export default function SapDeletePage() {
         }
     };
 
-    // ── Excluir Entidades Genéricas (BPs, Items, Profit Centers) ────────────
+    // ── Excluir Entidades Genéricas (BPs, Items, Profit Centers, Endereços/Fiscais) ────────────
     const runDeleteGeneric = async () => {
         if (!isAll && !parsedIds.length) return;
         if (isAll && !sourceTable) {
@@ -292,7 +292,8 @@ export default function SapDeletePage() {
         setApiError(null);
 
         let entityObject = '';
-        if (docMode === 'business-partners') entityObject = 'BusinessPartners';
+        const isBpDetails = docMode === 'bp-addresses-fiscal';
+        if (docMode === 'business-partners' || isBpDetails) entityObject = 'BusinessPartners';
         if (docMode === 'items') entityObject = 'Items';
         if (docMode === 'profit-centers') entityObject = 'ProfitCenters';
 
@@ -300,9 +301,11 @@ export default function SapDeletePage() {
             ? { entityObject, deleteAllFromTable: true, clearWriteback, sourceTable }
             : { entityObject, keys: parsedIds, clearWriteback, sourceTable };
 
-        addLog(isAll ? `Preparando exclusão de todas as chaves da tabela ${sourceTable}...` : `Enviando ${parsedIds.length} chave(s) para exclusão no SAP...`, 'info');
+        const targetApiRoute = isBpDetails ? '/api/sap/clear-bp-details' : '/api/sap/delete-entity';
+
+        addLog(isAll ? `Preparando ${isBpDetails ? 'limpeza de endereços' : 'exclusão'} da origem ${sourceTable}...` : `Enviando ${parsedIds.length} chave(s) para o SAP...`, 'info');
         try {
-            const res = await fetch('/api/sap/delete-entity', {
+            const res = await fetch(targetApiRoute, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
@@ -314,10 +317,10 @@ export default function SapDeletePage() {
             } else {
                 for (const d of json.details ?? []) {
                     const id = d.key;
-                    if (d.status === 'deleted') addLog(`✓ Chave=${id} excluída.`, 'ok');
+                    if (d.status === 'deleted') addLog(`✓ Chave=${id} atualizada com sucesso.`, 'ok');
                     else addLog(`✕ Chave=${id} — ${d.message}`, 'error');
                 }
-                addLog(`Concluído: ${json.deleted} excluído(s), ${json.errors} erro(s).`, json.errors > 0 ? 'error' : 'ok');
+                addLog(`Concluído: ${json.deleted} processado(s), ${json.errors} erro(s).`, json.errors > 0 ? 'error' : 'ok');
                 setSummary({ type: 'done', cancelled: json.deleted, errors: json.errors, total: json.total, writebackCleared: json.writebackCleared });
             }
         } catch (e: any) {
@@ -338,6 +341,7 @@ export default function SapDeletePage() {
         else runDeleteGeneric();
     };
 
+
     const reset = () => {
         setLogs([]);
         setProgress(null);
@@ -348,15 +352,16 @@ export default function SapDeletePage() {
         setIdsInput('');
     };
 
-    const actionLabel = docMode === 'orders' ? 'Cancelar' : 'Excluir';
-    const idLabel = docMode === 'orders' ? 'DocEntry' : docMode === 'journal-entries' ? 'JdtNum' : docMode === 'chart-of-accounts' ? 'AcctCode' : docMode === 'business-partners' ? 'CardCode' : docMode === 'items' ? 'ItemCode' : 'CenterCode';
+    const actionLabel = docMode === 'orders' ? 'Cancelar' : docMode === 'bp-addresses-fiscal' ? 'Limpar' : 'Excluir';
+    const idLabel = docMode === 'orders' ? 'DocEntry' : docMode === 'journal-entries' ? 'JdtNum' : docMode === 'chart-of-accounts' ? 'AcctCode' : (docMode === 'business-partners' || docMode === 'bp-addresses-fiscal') ? 'CardCode' : docMode === 'items' ? 'ItemCode' : 'CenterCode';
 
     return (
         <div className="container" style={{ maxWidth: 860 }}>
             <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                 {docMode === 'orders' && <><Ban size={26} style={{ color: 'var(--error)' }} /> Cancelar Sales Orders no SAP</>}
                 {docMode === 'journal-entries' && <><Trash2 size={26} style={{ color: 'var(--error)' }} /> Excluir Journal Entries no SAP</>}
-                {(docMode !== 'orders' && docMode !== 'journal-entries') && <><Trash2 size={26} style={{ color: 'var(--error)' }} /> Excluir {idLabel}s ({docMode}) no SAP</>}
+                {docMode === 'bp-addresses-fiscal' && <><Trash2 size={26} style={{ color: 'var(--error)' }} /> Limpar Endereços e Dados Fiscais (CRD1/CRD7)</>}
+                {(docMode !== 'orders' && docMode !== 'journal-entries' && docMode !== 'bp-addresses-fiscal') && <><Trash2 size={26} style={{ color: 'var(--error)' }} /> Excluir {idLabel}s ({docMode}) no SAP</>}
             </h1>
 
             {/* ── Tipo de documento ── */}
@@ -368,6 +373,7 @@ export default function SapDeletePage() {
                         { id: 'journal-entries', icon: '📒', label: 'Journal Entries (LCMs)', desc: 'Exclui lançamentos contábeis. Informe JdtNum.' },
                         { id: 'chart-of-accounts', icon: '🏦', label: 'Plano de Contas', desc: 'Exclui contas. Informe os Codes.' },
                         { id: 'business-partners', icon: '👥', label: 'Parceiros de Negócio', desc: 'Exclui parceiros de negócio. Informe os CardCodes.' },
+                        { id: 'bp-addresses-fiscal', icon: '📍', label: 'Endereços e Fiscais', desc: 'Exclui endereços e impostos (CRD1/CRD7). Informe CardCodes.' },
                         { id: 'items', icon: '📦', label: 'Itens (Produtos)', desc: 'Exclui produtos cadastrados. Informe os ItemCodes.' },
                         { id: 'profit-centers', icon: '🏢', label: 'Centros de Custo', desc: 'Exclui centros de custo do SAP. Informe os CenterCodes.' }
                     ] as { id: DocMode; icon: string; label: string; desc: string }[]).map(m => (
@@ -394,11 +400,11 @@ export default function SapDeletePage() {
             {/* ── Escopo (Geral, exceto JE) ── */}
             {(docMode !== 'journal-entries') && (
                 <div className="card" style={{ marginBottom: '1.25rem' }}>
-                    <h2 style={{ fontSize: '1rem', marginBottom: '1rem' }}>Escopo {docMode === 'orders' ? 'do Cancelamento' : 'da Exclusão'}</h2>
+                    <h2 style={{ fontSize: '1rem', marginBottom: '1rem' }}>Escopo {docMode === 'orders' ? 'do Cancelamento' : docMode === 'bp-addresses-fiscal' ? 'da Limpeza' : 'da Exclusão'}</h2>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                         {([
                             { id: 'list', icon: '🔢', label: `Por lista de ${idLabel}s`, desc: 'Informe manualmente os códigos.' },
-                            { id: 'all', icon: '💣', label: docMode === 'orders' ? 'Cancelar TODOS os abertos' : 'Excluir TODOS do arquivo', desc: docMode === 'orders' ? 'Busca e cancela todos os Orders abertos.' : 'Exclui todas as entitades vinculadas à origem selecionada.' },
+                            { id: 'all', icon: '💣', label: docMode === 'orders' ? 'Cancelar TODOS os abertos' : docMode === 'bp-addresses-fiscal' ? 'Limpar TODOS do arquivo' : 'Excluir TODOS do arquivo', desc: docMode === 'orders' ? 'Busca e cancela todos os Orders abertos.' : docMode === 'bp-addresses-fiscal' ? 'Limpa endereços e fiscus de todos os BPs da origem.' : 'Exclui todas as entitades vinculadas à origem selecionada.' },
                         ] as { id: Scope; icon: string; label: string; desc: string }[]).map(s => (
                             <div key={s.id}
                                 onClick={() => { setScope(s.id); reset(); }}

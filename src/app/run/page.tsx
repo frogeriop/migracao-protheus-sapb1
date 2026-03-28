@@ -126,6 +126,16 @@ export default function RunMigrationPage() {
     const [excelColumns, setExcelColumns] = useState<string[]>([]);
     const [excelFilters, setExcelFilters] = useState<ExcelFilter[]>([{ field: '', operator: 'equals', value: '' }]);
 
+    // ── Reseta a paginação automaticamente quando alterar qualquer filtro
+    useEffect(() => {
+        setOffset(0);
+    }, [
+        filterCodigo, filterTipo, filterPrefixo, filterNumero, filterDtIni, filterDtFim,
+        filterNaturez, filterFilial, filterEmpfat, filterNome, filterEmIni, filterEmFim,
+        filterDescricao, filterEstado, filterMunicipio, filterLoja, filterCgc, filterGrupo,
+        filterSapCode, filterSapStatus, excelFilters, dataSource, selectedTable, selectedEntityId
+    ]);
+
     // Busca entidades de migração do banco
     const fetchEntities = async () => {
         try {

@@ -23,7 +23,7 @@ const COMMON_SAP_FIELDS: { [key: string]: string[] } = {
     'BusinessPartnerGroups': ['Code', 'Name', 'Type'],
     'ProfitCenters': ['CenterCode', 'CenterName', 'CostCenterType', 'CenterOwner', 'Active', 'GroupCode', 'InWhichDimension', 'EffectiveFrom'],
     'BusinessPartners': [
-        'CardCode', 'CardName', 'CardType', 'GroupCode', 'Phone1', 'Phone2', 'Cellular', 'EmailAddress', 'Website', 'Notes', 'FederalTaxID',
+        'CardCode', 'CardName', 'AliasName', 'CardType', 'GroupCode', 'Phone1', 'Phone2', 'Cellular', 'EmailAddress', 'Website', 'Notes', 'FederalTaxID',
         'BPAddresses.AddressName', 'BPAddresses.Street', 'BPAddresses.StreetNo', 'BPAddresses.Block', 'BPAddresses.ZipCode', 'BPAddresses.City',
         'BPAddresses.County', 'BPAddresses.State', 'BPAddresses.Country', 'BPAddresses.AddressType', 'BPAddresses.AddrType', 'BPAddresses.TaxCode', 'BPAddresses.BuildingFloorRoom',
         'BPAddresses.U_TX_CNAE',
