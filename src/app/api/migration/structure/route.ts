@@ -39,6 +39,29 @@ function mapMssqlToPostgres(mssqlType: string, length: number): string {
     return 'text';
 }
 
+/** Escape para literais em SQL Server (aspas simples). */
+function sqlStringLiteral(value: string): string {
+    return "'" + value.replace(/'/g, "''") + "'";
+}
+
+/** Lista de códigos a partir de texto (vírgula ou quebra de linha). */
+function parseCommaSeparatedCodes(raw: string | undefined): string[] {
+    if (!raw?.trim()) return [];
+    return raw
+        .split(/[,\n;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+
+/** Converte YYYY-MM-DD ou YYYYMMDD para 8 caracteres; inválido retorna null. */
+function toProtheusDate8(raw: string | undefined): string | null {
+    if (!raw?.trim()) return null;
+    const t = raw.trim();
+    if (/^\d{8}$/.test(t)) return t;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t.replace(/-/g, '');
+    return null;
+}
+
 // Helper to build WHERE clause
 function buildWhereClause(tableName: string, columns: string[], filters?: any): string {
     const conditions = [];
@@ -53,17 +76,102 @@ function buildWhereClause(tableName: string, columns: string[], filters?: any): 
 
     if (upperTable === 'SE1010') {
         if (columns.includes('E1_SALDO')) conditions.push("E1_SALDO > 0");
-        if (columns.includes('E1_TIPO')) conditions.push("E1_TIPO NOT LIKE '-%'");
+        if (columns.includes('E1_TIPO')) conditions.push("E1_TIPO NOT LIKE '%-%'");
         // Filtra apenas a filial 01
         if (columns.includes('E1_FILIAL')) conditions.push("E1_FILIAL = '01'");
     }
 
     if (upperTable === 'SE2010') {
         if (columns.includes('E2_SALDO')) conditions.push("E2_SALDO > 0");
-        if (columns.includes('E2_TIPO')) conditions.push("E2_TIPO NOT LIKE '-%'");
+        if (columns.includes('E2_TIPO')) conditions.push("E2_TIPO NOT LIKE '%-%'");
+    }
+
+    // 2b. Filtros opcionais do usuário (AND sobre os fixos de SE1010 / SE2010)
+    if (upperTable === 'SE1010') {
+        const f = filters?.se1010;
+        if (f?.tipo?.trim() && columns.includes('E1_TIPO')) {
+            conditions.push(`E1_TIPO = ${sqlStringLiteral(f.tipo.trim())}`);
+        }
+        if (f?.xtipo?.trim() && columns.includes('E1_XTIPO')) {
+            conditions.push(`E1_XTIPO = ${sqlStringLiteral(f.xtipo.trim())}`);
+        }
+        if (f?.xtpparc?.trim() && columns.includes('E1_XTPPARC')) {
+            conditions.push(`E1_XTPPARC = ${sqlStringLiteral(f.xtpparc.trim())}`);
+        }
+        const e1emiDe = toProtheusDate8(f?.emissaoDe);
+        const e1emiAte = toProtheusDate8(f?.emissaoAte);
+        const e1venDe = toProtheusDate8(f?.vencreaDe);
+        const e1venAte = toProtheusDate8(f?.vencreaAte);
+        if (e1emiDe && columns.includes('E1_EMISSAO')) conditions.push(`E1_EMISSAO >= ${sqlStringLiteral(e1emiDe)}`);
+        if (e1emiAte && columns.includes('E1_EMISSAO')) conditions.push(`E1_EMISSAO <= ${sqlStringLiteral(e1emiAte)}`);
+        if (e1venDe && columns.includes('E1_VENCREA')) conditions.push(`E1_VENCREA >= ${sqlStringLiteral(e1venDe)}`);
+        if (e1venAte && columns.includes('E1_VENCREA')) conditions.push(`E1_VENCREA <= ${sqlStringLiteral(e1venAte)}`);
+        const e1Clientes = parseCommaSeparatedCodes(f?.codigoCliente);
+        if (e1Clientes.length === 1 && columns.includes('E1_CLIENTE')) {
+            conditions.push(`E1_CLIENTE = ${sqlStringLiteral(e1Clientes[0])}`);
+        } else if (e1Clientes.length > 1 && columns.includes('E1_CLIENTE')) {
+            conditions.push(
+                `E1_CLIENTE IN (${e1Clientes.map((c) => sqlStringLiteral(c)).join(', ')})`
+            );
+        }
+        const notaMode = f?.notaJaEmitida ?? 'nao';
+        if (columns.includes('E1_XNUMNFS')) {
+            if (notaMode === 'sim') {
+                conditions.push('(E1_XNUMNFS IS NOT NULL AND LTRIM(RTRIM(E1_XNUMNFS)) <> \'\')');
+            } else {
+                conditions.push('(E1_XNUMNFS IS NULL OR LTRIM(RTRIM(E1_XNUMNFS)) = \'\')');
+            }
+        }
+    }
+    if (upperTable === 'SE2010') {
+        const f = filters?.se2010;
+        if (f?.tipo?.trim() && columns.includes('E2_TIPO')) {
+            conditions.push(`E2_TIPO = ${sqlStringLiteral(f.tipo.trim())}`);
+        }
+        if (f?.xtipo?.trim() && columns.includes('E2_XTIPO')) {
+            conditions.push(`E2_XTIPO = ${sqlStringLiteral(f.xtipo.trim())}`);
+        }
+        if (f?.xtpparc?.trim() && columns.includes('E2_XTPPARC')) {
+            conditions.push(`E2_XTPPARC = ${sqlStringLiteral(f.xtpparc.trim())}`);
+        }
+        const e2emiDe = toProtheusDate8(f?.emissaoDe);
+        const e2emiAte = toProtheusDate8(f?.emissaoAte);
+        const e2venDe = toProtheusDate8(f?.vencreaDe);
+        const e2venAte = toProtheusDate8(f?.vencreaAte);
+        if (e2emiDe && columns.includes('E2_EMISSAO')) conditions.push(`E2_EMISSAO >= ${sqlStringLiteral(e2emiDe)}`);
+        if (e2emiAte && columns.includes('E2_EMISSAO')) conditions.push(`E2_EMISSAO <= ${sqlStringLiteral(e2emiAte)}`);
+        if (e2venDe && columns.includes('E2_VENCREA')) conditions.push(`E2_VENCREA >= ${sqlStringLiteral(e2venDe)}`);
+        if (e2venAte && columns.includes('E2_VENCREA')) conditions.push(`E2_VENCREA <= ${sqlStringLiteral(e2venAte)}`);
+        const e2Fornec = parseCommaSeparatedCodes(f?.codigoFornecedor);
+        if (e2Fornec.length === 1 && columns.includes('E2_FORNECE')) {
+            conditions.push(`E2_FORNECE = ${sqlStringLiteral(e2Fornec[0])}`);
+        } else if (e2Fornec.length > 1 && columns.includes('E2_FORNECE')) {
+            conditions.push(
+                `E2_FORNECE IN (${e2Fornec.map((c) => sqlStringLiteral(c)).join(', ')})`
+            );
+        }
     }
 
     // 3. Filters for Blocked/Inactive (MSBLQL)
+    if (upperTable === 'SU5010' && columns.includes('U5_MSBLQL')) {
+        const pStatus = filters?.su5010?.status || 'active';
+        if (pStatus === 'active') conditions.push("U5_MSBLQL = '2'");
+        else if (pStatus === 'inactive') conditions.push("U5_MSBLQL = '1'");
+    }
+
+    // SU5010: não importar contatos sem cliente vinculado (padrão Totvs: U5_CLIENTE; alguns ambientes usam alias E5_CLIENTE)
+    if (upperTable === 'SU5010') {
+        if (columns.includes('U5_CLIENTE')) {
+            conditions.push(
+                '(U5_CLIENTE IS NOT NULL AND LTRIM(RTRIM(U5_CLIENTE)) <> \'\')'
+            );
+        } else if (columns.includes('E5_CLIENTE')) {
+            conditions.push(
+                '(E5_CLIENTE IS NOT NULL AND LTRIM(RTRIM(E5_CLIENTE)) <> \'\')'
+            );
+        }
+    }
+
     if (upperTable === 'SA1010' && columns.includes('A1_MSBLQL')) {
         const pStatus = filters?.sa1010?.status || 'active';
         if (pStatus === 'active') conditions.push("A1_MSBLQL = '2'");
@@ -87,7 +195,7 @@ function buildWhereClause(tableName: string, columns: string[], filters?: any): 
                 WHERE SE1.E1_CLIENTE = ${tableName}.A1_COD 
                   AND SE1.E1_LOJA = ${tableName}.A1_LOJA 
                   AND SE1.E1_SALDO > 0 
-                  AND SE1.E1_TIPO NOT LIKE '-%' 
+                  AND SE1.E1_TIPO NOT LIKE '%-%' 
                   AND SE1.D_E_L_E_T_ <> '*'
             )`);
         }
@@ -100,7 +208,7 @@ function buildWhereClause(tableName: string, columns: string[], filters?: any): 
                 WHERE SE2.E2_FORNECE = ${tableName}.A2_COD 
                   AND SE2.E2_LOJA = ${tableName}.A2_LOJA 
                   AND SE2.E2_SALDO > 0 
-                  AND SE2.E2_TIPO NOT LIKE '-%' 
+                  AND SE2.E2_TIPO NOT LIKE '%-%' 
                   AND SE2.D_E_L_E_T_ <> '*'
             )`);
         }
@@ -126,6 +234,7 @@ const SAP_EXTRA_COLUMNS: Record<string, Record<string, string>> = {
     sa1010: { __sap_id: 'text' },
     sa2010: { __sap_id: 'text' },
     sb1010: { __sap_id: 'text' },
+    su5010: { __sap_id: 'text' },
     sed010: { sap_account_code: 'text', sap_account_name: 'text' },
 };
 

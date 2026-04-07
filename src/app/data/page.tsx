@@ -4,7 +4,13 @@ import { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { Loader2, ArrowRight, ArrowLeft, Search, X, BookOpen, Server, Link2, CheckCircle2, Sparkles, AlertCircle } from 'lucide-react';
 import { useConfig } from '@/hooks/useConfig';
 import { AgGridReact } from 'ag-grid-react';
-import { ColDef, ModuleRegistry, AllCommunityModule, ICellRendererParams } from 'ag-grid-community';
+import {
+    ColDef,
+    ModuleRegistry,
+    AllCommunityModule,
+    ICellRendererParams,
+    FilterChangedEvent,
+} from 'ag-grid-community';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -14,6 +20,7 @@ import 'ag-grid-community/styles/ag-theme-quartz.css';
 interface TableMeta {
     total: number;
     totalPages: number;
+    columnFiltersApplied?: boolean;
 }
 
 interface TableDef {
@@ -32,6 +39,7 @@ const AVAILABLE_TABLES: TableDef[] = [
     { code: 'SB1010', name: 'Produtos', supabaseTable: 'sb1010', orderBy: 'r_e_c_n_o_', group: 'protheus' },
     { code: 'SE1010', name: 'Contas a Receber', supabaseTable: 'se1010', orderBy: 'r_e_c_n_o_', group: 'protheus' },
     { code: 'SE2010', name: 'Contas a Pagar', supabaseTable: 'se2010', orderBy: 'r_e_c_n_o_', group: 'protheus' },
+    { code: 'SU5010', name: 'Contatos (cliente)', supabaseTable: 'su5010', orderBy: 'r_e_c_n_o_', group: 'protheus' },
     { code: 'SED010', name: 'Naturezas de Lançamento', supabaseTable: 'sed010', orderBy: 'ed_codigo', group: 'protheus', isCustom: true },
     // ── Excel ───────────────────────────────────────────────────────────────
     // Entidades do Excel serão carregadas dinamicamente
@@ -198,6 +206,16 @@ export default function DataViewerPage() {
     const [activeTab, setActiveTab] = useState<'protheus' | 'excel'>('protheus');
     const [excelEntities, setExcelEntities] = useState<any[]>([]);
 
+    const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const columnFilterDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const gridRef = useRef<AgGridReact>(null);
+
+    useEffect(() => {
+        return () => {
+            if (columnFilterDebounce.current) clearTimeout(columnFilterDebounce.current);
+        };
+    }, []);
+
     useEffect(() => {
         if (!loading) {
             fetch('/api/migration/entities')
@@ -211,8 +229,6 @@ export default function DataViewerPage() {
                 .catch(console.error);
         }
     }, [loading]);
-
-    const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const openLinkModal = useCallback(async (row: any) => {
         setModalRow(row);
@@ -376,6 +392,8 @@ export default function DataViewerPage() {
     const [search, setSearch] = useState('');
     const [searchInput, setSearchInput] = useState('');
     const [error, setError] = useState<string | null>(null);
+    /** Modelo AG Grid enviado ao servidor (filtro em tabela inteira). */
+    const [columnFilterModel, setColumnFilterModel] = useState<Record<string, unknown> | null>(null);
 
     const columnDefs = useMemo<ColDef[]>(() => {
         if (!data || data.length === 0) return [];
@@ -386,36 +404,81 @@ export default function DataViewerPage() {
     }, [data, selectedTable, openLinkModal]);
 
 
-    const fetchTableData = async (tableDef: TableDef, p: number = 1, searchTerm = '') => {
-        setIsLoading(true);
-        setSelectedTable(tableDef);
-        setPage(p);
-        setError(null);
+    const fetchTableData = useCallback(
+        async (
+            tableDef: TableDef,
+            p: number = 1,
+            searchTerm = '',
+            columnFilters?: Record<string, unknown> | null
+        ) => {
+            setIsLoading(true);
+            const switchingTable =
+                !selectedTable || selectedTable.supabaseTable !== tableDef.supabaseTable;
+            setSelectedTable(tableDef);
+            setPage(p);
+            setError(null);
 
-        try {
-            const params = new URLSearchParams({
-                table: tableDef.supabaseTable,
-                page: String(p),
-                limit: String(limit),
-                orderBy: tableDef.orderBy || (tableDef.group === 'excel' ? 'id' : 'r_e_c_n_o_'),
-                ...(searchTerm ? { search: searchTerm } : {}),
-            });
-            const res = await fetch(`/api/data?${params}`);
-            const result = await res.json();
-            if (result.success) {
-                setData(result.data || []);
-                setMeta(result.meta);
-            } else {
-                setError(result.message);
-                setData([]);
+            const effectiveFilters =
+                switchingTable && columnFilters === undefined
+                    ? null
+                    : columnFilters !== undefined
+                      ? columnFilters
+                      : columnFilterModel;
+
+            if (columnFilters !== undefined || switchingTable) {
+                setColumnFilterModel(
+                    effectiveFilters && Object.keys(effectiveFilters).length > 0
+                        ? effectiveFilters
+                        : null
+                );
             }
-        } catch (err: any) {
-            setError(err.message);
-            setData([]);
-        } finally {
-            setIsLoading(false);
-        }
-    };
+
+            try {
+                const params = new URLSearchParams({
+                    table: tableDef.supabaseTable,
+                    page: String(p),
+                    limit: String(limit),
+                    orderBy: tableDef.orderBy || (tableDef.group === 'excel' ? 'id' : 'r_e_c_n_o_'),
+                    ...(searchTerm ? { search: searchTerm } : {}),
+                });
+                if (effectiveFilters && Object.keys(effectiveFilters).length > 0) {
+                    params.set('columnFilters', JSON.stringify(effectiveFilters));
+                }
+                const res = await fetch(`/api/data?${params}`);
+                const result = await res.json();
+                if (result.success) {
+                    setData(result.data || []);
+                    setMeta(result.meta);
+                } else {
+                    setError(result.message);
+                    setData([]);
+                }
+            } catch (err: unknown) {
+                setError(err instanceof Error ? err.message : String(err));
+                setData([]);
+            } finally {
+                setIsLoading(false);
+            }
+        },
+        [selectedTable, columnFilterModel, limit]
+    );
+
+    /** Servidor aplica WHERE; ignoramos eventos da API e reavaliação pós-dados para não refetch em loop. O filtro de coluna do AG Grid continua alinhado ao default "contains" + meta da API. */
+    const onFilterChanged = useCallback(
+        (event: FilterChangedEvent) => {
+            if (event.source === 'api') return;
+            if (event.afterDataChange) return;
+            if (!selectedTable) return;
+            if (columnFilterDebounce.current) clearTimeout(columnFilterDebounce.current);
+            columnFilterDebounce.current = setTimeout(() => {
+                const api = event.api;
+                const model = api.getFilterModel() as Record<string, unknown> | null;
+                const normalized = model && Object.keys(model).length > 0 ? model : null;
+                fetchTableData(selectedTable, 1, search, normalized);
+            }, 400);
+        },
+        [selectedTable, search, fetchTableData]
+    );
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -439,7 +502,12 @@ export default function DataViewerPage() {
             <div className="card" style={{ marginBottom: '1rem' }}>
                 <div style={{ display: 'flex', gap: '2rem', borderBottom: '1px solid var(--card-border)', marginBottom: '1rem' }}>
                     <button
-                        onClick={() => { setActiveTab('protheus'); setSelectedTable(null); setData([]); }}
+                        onClick={() => {
+                            setActiveTab('protheus');
+                            setSelectedTable(null);
+                            setData([]);
+                            setColumnFilterModel(null);
+                        }}
                         style={{
                             padding: '0.8rem 0.5rem', background: 'none', border: 'none', cursor: 'pointer',
                             fontSize: '0.9rem', fontWeight: activeTab === 'protheus' ? 700 : 500,
@@ -450,7 +518,12 @@ export default function DataViewerPage() {
                         Origem: TOTVS Protheus
                     </button>
                     <button
-                        onClick={() => { setActiveTab('excel'); setSelectedTable(null); setData([]); }}
+                        onClick={() => {
+                            setActiveTab('excel');
+                            setSelectedTable(null);
+                            setData([]);
+                            setColumnFilterModel(null);
+                        }}
                         style={{
                             padding: '0.8rem 0.5rem', background: 'none', border: 'none', cursor: 'pointer',
                             fontSize: '0.9rem', fontWeight: activeTab === 'excel' ? 700 : 500,
@@ -649,6 +722,8 @@ export default function DataViewerPage() {
                     {/* AG Grid */}
                     <div className="ag-theme-quartz-dark" style={{ flex: 1, width: '100%' }}>
                         <AgGridReact
+                            ref={gridRef}
+                            key={`${selectedTable.supabaseTable}-${selectedTable.code}`}
                             theme="legacy"
                             rowData={data}
                             columnDefs={columnDefs}
@@ -656,11 +731,15 @@ export default function DataViewerPage() {
                                 sortable: true,
                                 filter: true,
                                 resizable: true,
+                                filterParams: {
+                                    defaultOption: 'contains',
+                                },
                             }}
                             rowHeight={40}
                             headerHeight={42}
                             pagination={false}
                             animateRows
+                            onFilterChanged={onFilterChanged}
                             suppressCellFocus={selectedTable.code === 'SED010'}
                             noRowsOverlayComponent={() => (
                                 <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--secondary)' }}>

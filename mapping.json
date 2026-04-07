@@ -149,7 +149,7 @@
         "target": "BPAddresses.State"
       },
       {
-        "source": "a1_nreduz",
+        "source": "a1_nome",
         "target": "AliasName"
       }
     ]
@@ -343,22 +343,60 @@
         "target": "DocDueDate"
       },
       {
-        "source": "e1_nomcli",
-        "target": "CardName"
+        "source": "e1_cliente",
+        "target": "CardName",
+        "rule": {
+          "type": "lookup",
+          "lookupTable": "sa1010",
+          "lookupKey": "a1_cod",
+          "lookupValue": "a1_nome"
+        }
       },
       {
-        "source": "e1_xtpsrv",
+        "source": "e1_xtipo",
         "target": "DocumentLines.ItemCode",
         "rule": {
           "type": "map",
           "map": [
             {
-              "from": "4",
-              "to": "001"
+              "from": "1",
+              "to": "004"
+            },
+            {
+              "from": "2",
+              "to": "005"
             },
             {
               "from": "3",
+              "to": "001"
+            },
+            {
+              "from": "5",
               "to": "002"
+            },
+            {
+              "from": "6",
+              "to": "003"
+            },
+            {
+              "from": "7",
+              "to": "002"
+            },
+            {
+              "from": "8",
+              "to": "007"
+            },
+            {
+              "from": "A",
+              "to": "008"
+            },
+            {
+              "from": "B",
+              "to": "009"
+            },
+            {
+              "from": "9",
+              "to": "009"
             }
           ]
         }
@@ -395,7 +433,7 @@
             },
             {
               "from": "2",
-              "to": "5"
+              "to": "4"
             },
             {
               "from": "5",
@@ -409,10 +447,35 @@
         "target": "NumAtCard",
         "rule": {
           "type": "expression",
-          "expression": "{e1_propos}/{e1_aditiv}/{e1_parcela}"
+          "expression": "{e1_propos}/{e1_aditiv}/{e1_num}/{e1_parcela}"
+        }
+      },
+      {
+        "source": "",
+        "target": "DocDate",
+        "rule": {
+          "type": "today",
+          "value": "iso"
         }
       }
-    ]
+    ],
+    "resultCenterDistribution": {
+      "lines": [
+        {
+          "centerCode": "D002",
+          "lineTotalFormula": "{e1_valor} * ({e1_hrscon}/({e1_hrscon}+{e1_hrsdev}))"
+        },
+        {
+          "centerCode": "D006",
+          "lineTotalFormula": "{e1_valor} * ({e1_hrsdev}/({e1_hrscon}+{e1_hrsdev}))"
+        }
+      ],
+      "compareTotalField": "e1_valor",
+      "reconcileLastLine": true,
+      "lineDimensionField": "CostingCode2",
+      "distributionMode": "singleLine",
+      "inWhichDimension": 2
+    }
   },
   "EXCEL_f3e81e18-7197-489e-8987-1aa020728458": {
     "sourceTable": "EXCEL_f3e81e18-7197-489e-8987-1aa020728458",
@@ -587,6 +650,36 @@
       {
         "source": "taxid1",
         "target": "BPFiscalTaxIDCollection.TaxId1"
+      }
+    ]
+  },
+  "SU5010": {
+    "sourceTable": "SU5010",
+    "targetObject": "ContactEmployees",
+    "fields": [
+      {
+        "source": "u5_cliente",
+        "target": "CardCode",
+        "rule": {
+          "type": "prefix",
+          "value": "C"
+        }
+      },
+      {
+        "source": "u5_contat",
+        "target": "Name"
+      },
+      {
+        "source": "u5_dfuncao",
+        "target": "Position"
+      },
+      {
+        "source": "u5_fcom1",
+        "target": "Phone1"
+      },
+      {
+        "source": "u5_email",
+        "target": "E_Mail"
       }
     ]
   },

@@ -244,19 +244,32 @@ export async function POST(request: Request) {
                 // ── Write-back ────────────────────────────────────────────────
                 let writebackCleared = 0;
                 if (clearWriteback && cancelled > 0) {
-                    send({ type: 'writeback', message: `🔄 Zerando __sap_id em ${sourceTable}...` });
+                    send({ type: 'writeback', message: `🔄 Zerando vínculos de integração (__sap_id e sap_jdt_num) em ${sourceTable}...` });
                     const supabase = createClient(config.supabase.url, config.supabase.key, { auth: { persistSession: false } });
 
-                    const { error, count } = cancelAll
-                        ? await supabase.from(sourceTable).update({ __sap_id: null }).not('__sap_id', 'is', null)
-                        : await supabase.from(sourceTable).update({ __sap_id: null }).in('__sap_id', docEntries);
+                    const clearField = async (field: '__sap_id' | 'sap_jdt_num') => {
+                        if (cancelAll) {
+                            return supabase.from(sourceTable).update({ [field]: null }).not(field, 'is', null);
+                        }
+                        return supabase.from(sourceTable).update({ [field]: null }).in(field, docEntries);
+                    };
 
-                    if (error) {
-                        send({ type: 'writeback', message: `⚠ Write-back falhou: ${error.message}` });
-                    } else {
-                        writebackCleared = count ?? 0;
-                        send({ type: 'writeback', message: `✓ ${writebackCleared} registro(s) zerado(s) no Supabase.` });
+                    const sapIdRes = await clearField('__sap_id');
+                    if (sapIdRes.error) {
+                        send({ type: 'writeback', message: `⚠ Falha ao zerar __sap_id: ${sapIdRes.error.message}` });
                     }
+
+                    const sapJdtRes = await clearField('sap_jdt_num');
+                    if (sapJdtRes.error) {
+                        // Algumas tabelas podem não possuir sap_jdt_num; segue fluxo sem abortar.
+                        send({ type: 'writeback', message: `⚠ Falha ao zerar sap_jdt_num: ${sapJdtRes.error.message}` });
+                    }
+
+                    writebackCleared = (sapIdRes.count ?? 0) + (sapJdtRes.count ?? 0);
+                    send({
+                        type: 'writeback',
+                        message: `✓ Limpeza concluída: __sap_id=${sapIdRes.count ?? 0}, sap_jdt_num=${sapJdtRes.count ?? 0}.`,
+                    });
                 }
 
                 // ── Conclusão ─────────────────────────────────────────────────

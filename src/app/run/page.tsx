@@ -36,6 +36,7 @@ const TABLE_OPTIONS = [
     { code: 'SA1010', name: 'Clientes (BusinessPartners)' },
     { code: 'SA2010', name: 'Fornecedores (BusinessPartners)' },
     { code: 'SB1010', name: 'Produtos (Items)' },
+    { code: 'SU5010', name: 'Contatos cliente (ContactEmployees)' },
     { code: 'SE1010', name: 'Contas a Receber (Sales Orders)' },
     { code: 'SE2010', name: 'Contas a Pagar (JournalEntries / LCM)' },
 ];
@@ -116,6 +117,7 @@ export default function RunMigrationPage() {
     const [filterLoja, setFilterLoja] = useState(''); // a1_loja / a2_loja
     const [filterCgc, setFilterCgc] = useState(''); // a1_cgc / a2_cgc (CNPJ/CPF)
     const [filterGrupo, setFilterGrupo] = useState(''); // b1_grupo (SB1010)
+    const [filterCodcont, setFilterCodcont] = useState(''); // u5_codcont (SU5010)
     const [filterSapCode, setFilterSapCode] = useState(''); // valor específico de __sap_id / __sap_id
     const [filterSapStatus, setFilterSapStatus] = useState(''); // '' | 'null' | 'notnull'
     const [syncingSapCodes, setSyncingSapCodes] = useState(false);
@@ -132,7 +134,7 @@ export default function RunMigrationPage() {
     }, [
         filterCodigo, filterTipo, filterPrefixo, filterNumero, filterDtIni, filterDtFim,
         filterNaturez, filterFilial, filterEmpfat, filterNome, filterEmIni, filterEmFim,
-        filterDescricao, filterEstado, filterMunicipio, filterLoja, filterCgc, filterGrupo,
+        filterDescricao, filterEstado, filterMunicipio, filterLoja, filterCgc, filterGrupo, filterCodcont,
         filterSapCode, filterSapStatus, excelFilters, dataSource, selectedTable, selectedEntityId
     ]);
 
@@ -214,7 +216,7 @@ export default function RunMigrationPage() {
         setFilterNaturez(''); setFilterFilial(''); setFilterEmpfat(''); setFilterNome('');
         setFilterDtIni(''); setFilterDtFim(''); setFilterEmIni(''); setFilterEmFim('');
         setFilterDescricao(''); setFilterEstado(''); setFilterMunicipio('');
-        setFilterLoja(''); setFilterCgc(''); setFilterGrupo('');
+        setFilterLoja(''); setFilterCgc(''); setFilterGrupo(''); setFilterCodcont('');
         setFilterSapCode(''); setFilterSapStatus('');
         setPeriodFilterWarning(null);
         setExcelFilters([{ field: '', operator: 'equals', value: '' }]);
@@ -250,13 +252,18 @@ export default function RunMigrationPage() {
         setLoadingPreview(true);
         setPreviewList([]);
         try {
+            const safeOffset = Math.max(0, Math.floor(Number(offset)) || 0);
+            const safeLimit = Math.min(500, Math.max(1, Math.floor(Number(limit)) || 50));
+            if (safeOffset !== offset) setOffset(safeOffset);
+            if (safeLimit !== limit) setLimit(safeLimit);
+
             // Se a carga for via Excel, usamos a tabela dinâmica retornada no upload
             const sourceTable = dataSource === 'excel' ? stagingTable : selectedTable;
             const body: any = { 
                 table: selectedTable, 
                 sourceTable, 
-                limit, 
-                offset, 
+                limit: safeLimit, 
+                offset: safeOffset, 
                 duplicateAddress,
                 entityId: dataSource === 'excel' ? selectedEntityId : undefined
             };
@@ -283,8 +290,8 @@ export default function RunMigrationPage() {
                 if (filterSapStatus) filters.sapStatus = filterSapStatus;
                 if (Object.keys(filters).length > 0) body.filters = filters;
             }
-            // ── Filtros cadastros (SA1010 / SA2010 / SB1010) ──
-            if (['SA1010', 'SA2010', 'SB1010'].includes(selectedTable)) {
+            // ── Filtros cadastros (SA1010 / SA2010 / SB1010 / SU5010) ──
+            if (['SA1010', 'SA2010', 'SB1010', 'SU5010'].includes(selectedTable)) {
                 const filters: Record<string, string> = {};
                 if (filterCodigo.trim()) filters.codigo = filterCodigo.trim();
                 if (filterNome.trim()) filters.nome = filterNome.trim();
@@ -296,6 +303,7 @@ export default function RunMigrationPage() {
                 if (filterLoja.trim()) filters.loja = filterLoja.trim();
                 if (filterCgc.trim()) filters.cgc = filterCgc.trim().replace(/\D/g, '');
                 if (filterGrupo.trim()) filters.grupo = filterGrupo.trim();
+                if (filterCodcont.trim()) filters.codcont = filterCodcont.trim();
                 if (filterSapCode.trim()) filters.sapCode = filterSapCode.trim();
                 if (filterSapStatus) filters.sapStatus = filterSapStatus;
                 if (Object.keys(filters).length > 0) body.filters = filters;
@@ -350,6 +358,7 @@ export default function RunMigrationPage() {
             }
 
             const item = newList[i];
+            const resolvedAction: 'insert' | 'update' = item.existsInSap ? 'update' : item.action;
 
             // ── Mark as Loading & Yield Paint ──
             newList[i].status = 'loading';
@@ -369,6 +378,7 @@ export default function RunMigrationPage() {
             if (dataSource === 'protheus') {
                 if (tableCode.startsWith('SA')) mappingTarget = 'BusinessPartners';
                 else if (tableCode.startsWith('SB')) mappingTarget = 'Items';
+                else if (tableCode === 'SU5010') mappingTarget = 'ContactEmployees';
                 else if (tableCode === 'SE1010') mappingTarget = 'Orders';
                 else if (tableCode === 'SE2010') mappingTarget = 'JournalEntries';
                 else mappingTarget = 'PurchaseInvoices';
@@ -387,8 +397,13 @@ export default function RunMigrationPage() {
 
                 // SE2010 e SE1010: envia o r_e_c_n_o_ para write-back (JdtNum / DocEntry)
                 const sourceRecno: number | undefined =
-                    (selectedTable === 'SE2010' || selectedTable === 'SE1010')
+                    (selectedTable === 'SE2010' || selectedTable === 'SE1010' || selectedTable === 'SU5010')
                         ? item.source?.r_e_c_n_o_
+                        : undefined;
+
+                const e1NumForExecute =
+                    selectedTable === 'SE1010'
+                        ? String(item.source?.e1_num ?? '').trim() || undefined
                         : undefined;
 
                 const res = await fetch('/api/migration/execute', {
@@ -398,10 +413,11 @@ export default function RunMigrationPage() {
                         table: dataSource === 'excel' ? stagingTable : selectedTable,
                         targetObject: mappingTarget,
                         payload: item.target,
-                        action: item.action,
+                        action: resolvedAction,
                         source_pk: sourcePk,
                         source_recno: sourceRecno,
-                        source_row_id: sourceRowId
+                        source_row_id: sourceRowId,
+                        ...(e1NumForExecute !== undefined ? { e1_num: e1NumForExecute } : {})
                     })
                 });
 
@@ -412,15 +428,19 @@ export default function RunMigrationPage() {
                     const d = json.data || {};
                     let successMsg = 'Integrado com sucesso';
                     if (selectedTable === 'SE1010') {
-                        if (item.action === 'insert') {
+                        if (resolvedAction === 'insert') {
                             const docNum = d.DocNum ?? '';
                             const docEntry = d.DocEntry ?? '';
-                            successMsg = `Pedido criado — DocNum: ${docNum} | DocEntry: ${docEntry}`;
+                            const drNote = d.distributionRuleMessage ? ` — ${d.distributionRuleMessage}` : '';
+                            const drWarn = d.distributionRuleWarning ? ` ⚠ ${d.distributionRuleWarning}` : '';
+                            successMsg = `Draft criado — DocNum: ${docNum} | DocEntry: ${docEntry}${drNote}${drWarn}`;
                         } else {
-                            successMsg = `Sales Order atualizada — DocEntry: ${d.DocEntry ?? ''}`;
+                            successMsg = `Draft atualizado — DocEntry: ${d.DocEntry ?? ''}`;
                         }
                     } else if (selectedTable === 'SE2010') {
                         successMsg = `LCM criado — JdtNum: ${d.JdtNum ?? 'OK'}`;
+                    } else if (selectedTable === 'SU5010') {
+                        successMsg = `Contato ${resolvedAction === 'insert' ? 'criado' : 'atualizado'} — CardCode: ${d.CardCode ?? ''} | LineNum: ${d.LineNum ?? ''}`;
                     } else {
                         const sapId = d.CardCode || d.ItemCode || d.DocEntry || 'OK';
                         successMsg = `Integrado com sucesso ID: ${sapId}`;
@@ -550,13 +570,34 @@ export default function RunMigrationPage() {
 
                         <div className="input-group">
                             <label className="label">Limite de Registros (Lote)</label>
-                            <input type="number" className="input" value={limit} onChange={e => setLimit(Number(e.target.value))} />
-                            <small style={{ color: 'var(--secondary)' }}>Máximo recomendado: 100.</small>
+                            <input
+                                type="number"
+                                className="input"
+                                min={1}
+                                max={500}
+                                value={limit}
+                                onChange={e => {
+                                    const v = parseInt(e.target.value, 10);
+                                    setLimit(Number.isFinite(v) ? Math.min(500, Math.max(1, v)) : 1);
+                                }}
+                            />
+                            <small style={{ color: 'var(--secondary)' }}>Entre 1 e 500 (recomendado até 100).</small>
                         </div>
 
                         <div className="input-group">
                             <label className="label">Ignorar (Offset)</label>
-                            <input type="number" className="input" value={offset} onChange={e => setOffset(Number(e.target.value))} />
+                            <input
+                                type="number"
+                                className="input"
+                                min={0}
+                                step={1}
+                                value={offset}
+                                onChange={e => {
+                                    const v = parseInt(e.target.value, 10);
+                                    setOffset(Number.isFinite(v) && v >= 0 ? v : 0);
+                                }}
+                            />
+                            <small style={{ color: 'var(--secondary)' }}>Apenas ≥ 0 (valores negativos geram erro no Supabase).</small>
                         </div>
 
                         {dataSource === 'excel' && (
@@ -930,8 +971,8 @@ export default function RunMigrationPage() {
                             </div>
                         )}
 
-                        {/* ── Filtros SA1010 / SA2010 / SB1010 ── */}
-                        {dataSource === 'protheus' && (['SA1010', 'SA2010', 'SB1010'] as string[]).includes(selectedTable) && (
+                        {/* ── Filtros SA1010 / SA2010 / SB1010 / SU5010 ── */}
+                        {dataSource === 'protheus' && (['SA1010', 'SA2010', 'SB1010', 'SU5010'] as string[]).includes(selectedTable) && (
                             <div style={{
                                 marginTop: '0.5rem', padding: '1rem', borderRadius: '8px',
                                 border: '1px solid rgba(99,102,241,0.25)', backgroundColor: 'rgba(99,102,241,0.05)',
@@ -944,27 +985,48 @@ export default function RunMigrationPage() {
                                     {/* Código */}
                                     <div className="input-group" style={{ margin: 0 }}>
                                         <label className="label" style={{ fontSize: '0.75rem' }}>
-                                            {selectedTable === 'SA1010' ? 'Código (A1_COD)' : selectedTable === 'SA2010' ? 'Código (A2_COD)' : 'Código (B1_COD)'}
+                                            {selectedTable === 'SA1010'
+                                                ? 'Código (A1_COD)'
+                                                : selectedTable === 'SA2010'
+                                                    ? 'Código (A2_COD)'
+                                                    : selectedTable === 'SU5010'
+                                                        ? 'Cliente (U5_CLIENTE)'
+                                                        : 'Código (B1_COD)'}
                                         </label>
                                         <input className="input" style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem' }}
                                             placeholder="ex: C00001" value={filterCodigo} onChange={e => setFilterCodigo(e.target.value)} />
                                     </div>
 
-                                    {/* Loja — só SA1010 / SA2010 */}
-                                    {(selectedTable === 'SA1010' || selectedTable === 'SA2010') && (
+                                    {/* Loja — SA1010 / SA2010 / SU5010 */}
+                                    {(selectedTable === 'SA1010' || selectedTable === 'SA2010' || selectedTable === 'SU5010') && (
                                         <div className="input-group" style={{ margin: 0 }}>
                                             <label className="label" style={{ fontSize: '0.75rem' }}>
-                                                {selectedTable === 'SA1010' ? 'Loja (A1_LOJA)' : 'Loja (A2_LOJA)'}
+                                                {selectedTable === 'SA1010' ? 'Loja (A1_LOJA)' : selectedTable === 'SA2010' ? 'Loja (A2_LOJA)' : 'Loja (U5_LOJA)'}
                                             </label>
                                             <input className="input" style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem' }}
                                                 placeholder="ex: 01" value={filterLoja} onChange={e => setFilterLoja(e.target.value)} />
                                         </div>
                                     )}
 
+                                    {/* Código do contato — SU5010 */}
+                                    {selectedTable === 'SU5010' && (
+                                        <div className="input-group" style={{ margin: 0 }}>
+                                            <label className="label" style={{ fontSize: '0.75rem' }}>Cód. contato (U5_CODCONT)</label>
+                                            <input className="input" style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem' }}
+                                                placeholder="ex: 000001" value={filterCodcont} onChange={e => setFilterCodcont(e.target.value)} />
+                                        </div>
+                                    )}
+
                                     {/* Nome (Clientes/Fornecedores) ou Descrição (Produtos) */}
                                     <div className="input-group" style={{ margin: 0, gridColumn: '1 / -1' }}>
                                         <label className="label" style={{ fontSize: '0.75rem' }}>
-                                            {selectedTable === 'SA1010' ? 'Nome (A1_NOME)' : selectedTable === 'SA2010' ? 'Nome (A2_NOME)' : 'Descrição (B1_DESC)'}
+                                            {selectedTable === 'SA1010'
+                                                ? 'Nome (A1_NOME)'
+                                                : selectedTable === 'SA2010'
+                                                    ? 'Nome (A2_NOME)'
+                                                    : selectedTable === 'SU5010'
+                                                        ? 'Nome contato (U5_CONTAT)'
+                                                        : 'Descrição (B1_DESC)'}
                                         </label>
                                         {selectedTable === 'SB1010' ? (
                                             <input className="input" style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem' }}
@@ -982,12 +1044,14 @@ export default function RunMigrationPage() {
                                             placeholder="ex: 0101" value={filterFilial} onChange={e => setFilterFilial(e.target.value)} />
                                     </div>
 
-                                    {/* EmpFat */}
+                                    {/* EmpFat — não SU5010 */}
+                                    {selectedTable !== 'SU5010' && (
                                     <div className="input-group" style={{ margin: 0 }}>
                                         <label className="label" style={{ fontSize: '0.75rem' }}>Emp. Fat.</label>
                                         <input className="input" style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem' }}
                                             placeholder="ex: 01" value={filterEmpfat} onChange={e => setFilterEmpfat(e.target.value)} />
                                     </div>
+                                    )}
 
                                     {/* CNPJ — só clientes/fornecedores */}
                                     {(selectedTable === 'SA1010' || selectedTable === 'SA2010') && (<>
@@ -1037,7 +1101,13 @@ export default function RunMigrationPage() {
                                     </select>
                                     {filterSapStatus === '' && (
                                         <input className="input" style={{ padding: '0.4rem 0.6rem', fontSize: '0.85rem', marginTop: '0.35rem' }}
-                                            placeholder={selectedTable === 'SB1010' ? 'ou busque ItemCode (ex: PARAF-001)' : 'ou busque CardCode (ex: F000688)'}
+                                            placeholder={
+                                                selectedTable === 'SB1010'
+                                                    ? 'ou busque ItemCode (ex: PARAF-001)'
+                                                    : selectedTable === 'SU5010'
+                                                        ? 'ou busque LineNum (__sap_id, ex: 0)'
+                                                        : 'ou busque CardCode (ex: F000688)'
+                                            }
                                             value={filterSapCode} onChange={e => setFilterSapCode(e.target.value)} />
                                     )}
                                     {/* Botão de ressincronização após reimportação do TOTVS */}
@@ -1060,7 +1130,7 @@ export default function RunMigrationPage() {
 
                                 {/* Badges */}
                                 {[filterCodigo, filterNome, filterDescricao, filterFilial, filterEmpfat,
-                                    filterCgc, filterEstado, filterMunicipio, filterLoja, filterGrupo, filterSapCode].some(Boolean) && (
+                                    filterCgc, filterEstado, filterMunicipio, filterLoja, filterGrupo, filterCodcont, filterSapCode].some(Boolean) && (
                                         <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
                                             {[
                                                 filterFilial && `Filial: ${filterFilial}`,
@@ -1073,6 +1143,7 @@ export default function RunMigrationPage() {
                                                 filterEstado && `UF: ${filterEstado}`,
                                                 filterMunicipio && `Mun: ${filterMunicipio}`,
                                                 filterGrupo && `Grupo: ${filterGrupo}`,
+                                                filterCodcont && `CodCont: ${filterCodcont}`,
                                                 filterSapCode && `SAP: ${filterSapCode}`,
                                             ].filter(Boolean).map((label, i) => (
                                                 <span key={i} style={{ padding: '2px 8px', borderRadius: 99, fontSize: '0.72rem', backgroundColor: 'rgba(99,102,241,0.2)', color: 'var(--accent)', fontWeight: 600 }}>{label}</span>
@@ -1082,7 +1153,7 @@ export default function RunMigrationPage() {
                                                     setFilterCodigo(''); setFilterNome(''); setFilterDescricao('');
                                                     setFilterFilial(''); setFilterEmpfat(''); setFilterCgc('');
                                                     setFilterEstado(''); setFilterMunicipio(''); setFilterLoja(''); setFilterGrupo('');
-                                                    setFilterSapCode('');
+                                                    setFilterCodcont(''); setFilterSapCode('');
                                                 }}
                                                 style={{ fontSize: '0.72rem', color: 'var(--secondary)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', textDecoration: 'underline' }}
                                             >Limpar tudo</button>
@@ -1222,6 +1293,9 @@ export default function RunMigrationPage() {
                             <tbody>
                                 {previewList.map((row, idx) => (
                                     <React.Fragment key={idx}>
+                                        {(() => {
+                                            const resolvedRowAction: 'insert' | 'update' = row.existsInSap ? 'update' : row.action;
+                                            return (
                                         <tr id={`preview-row-${idx}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', backgroundColor: idx % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
                                             <td style={{ padding: '0.75rem', textAlign: 'center' }}>
                                                 {row.status ? getStatusIcon(row.status) : (
@@ -1245,6 +1319,8 @@ export default function RunMigrationPage() {
                                                             row.source?.e1_parcela,
                                                             row.source?.e1_tipo
                                                         ].filter(Boolean).map((v: string) => v.trim()).filter(Boolean).join('/')
+                                                        : selectedTable === 'SU5010'
+                                                            ? [row.source?.u5_cliente, row.source?.u5_loja, row.source?.u5_codcont].filter(Boolean).map((v: string) => String(v).trim()).filter(Boolean).join(' / ') || '---'
                                                         : ['SA1010', 'SA2010', 'SB1010'].includes(selectedTable) 
                                                             ? (row.source?.a1_cod || row.source?.a2_cod || row.source?.b1_cod || '---')
                                                             : (
@@ -1292,8 +1368,10 @@ export default function RunMigrationPage() {
                                                 )}
                                                 {selectedTable !== 'SE2010' && selectedTable !== 'SE1010' && (
                                                     <small style={{ opacity: 0.6 }}>
-                                                        {row.source?.a1_nome || row.source?.a2_nome || row.source?.b1_desc || ''}
-                                                        {!['SA1010', 'SA2010', 'SB1010'].includes(selectedTable) && (
+                                                        {selectedTable === 'SU5010'
+                                                            ? (row.source?.u5_contat ? String(row.source.u5_contat).trim() : '')
+                                                            : (row.source?.a1_nome || row.source?.a2_nome || row.source?.b1_desc || '')}
+                                                        {!['SA1010', 'SA2010', 'SB1010', 'SU5010'].includes(selectedTable) && (
                                                             <div style={{ marginTop: '2px' }}>
                                                                 Expandir para ver chaves e valores completos
                                                             </div>
@@ -1317,6 +1395,8 @@ export default function RunMigrationPage() {
                                                             )}
                                                         </>
                                                     )
+                                                    : selectedTable === 'SU5010'
+                                                        ? `${row.target?.CardCode ?? '---'} · ${row.target?.Name ?? ''}${row.target?._contactLineNum != null ? ` (Line ${row.target._contactLineNum})` : ''}`
                                                     : row.target?.CardCode || row.target?.ItemCode || row.target?.DocNum || row.target?.Code || row.target?.AcctCode || '---'
                                                 }
                                                 {row.matchMethod === 'tax_id' && (
@@ -1332,18 +1412,18 @@ export default function RunMigrationPage() {
                                                     padding: '2px 8px',
                                                     borderRadius: '4px',
                                                     fontSize: '0.75rem',
-                                                    backgroundColor: row.action === 'insert'
+                                                    backgroundColor: resolvedRowAction === 'insert'
                                                         ? 'rgba(34, 197, 94, 0.2)'
                                                         : row.matchMethod === 'tax_id'
                                                             ? 'rgba(251, 146, 60, 0.2)'
                                                             : 'rgba(234, 179, 8, 0.2)',
-                                                    color: row.action === 'insert'
+                                                    color: resolvedRowAction === 'insert'
                                                         ? '#22c55e'
                                                         : row.matchMethod === 'tax_id'
                                                             ? '#fb923c'
                                                             : '#eab308'
                                                 }}>
-                                                    {row.action === 'insert'
+                                                    {resolvedRowAction === 'insert'
                                                         ? 'INCLUSÃO'
                                                         : row.matchMethod === 'tax_id'
                                                             ? '✓ ATUALIZ. via CNPJ/CPF'
@@ -1355,7 +1435,11 @@ export default function RunMigrationPage() {
                                                         dataSource === 'protheus' ? (
                                                             selectedTable.startsWith('SA') ? 'BusinessPartners' :
                                                                 selectedTable.startsWith('SB') ? 'Items' :
-                                                                    selectedTable === 'SE1010' ? 'Orders' :
+                                                                    selectedTable === 'SU5010'
+                                                                        ? `BusinessPartners('${String(row.target?.CardCode ?? '…').replace(/'/g, "''")}')/ContactEmployees`
+                                                                    : selectedTable === 'SE1010'
+                                                                        ? 'Drafts'
+                                                                        :
                                                                         selectedTable === 'SE2010' ? 'JournalEntries' :
                                                                             'PurchaseInvoices'
                                                         ) : selectedTable
@@ -1383,6 +1467,8 @@ export default function RunMigrationPage() {
                                                 </button>
                                             </td>
                                         </tr>
+                                            );
+                                        })()}
                                         {expandedRow === idx && (
                                             <tr>
                                                 <td colSpan={5} style={{ padding: '0', backgroundColor: 'rgba(0,0,0,0.3)' }}>
@@ -1395,6 +1481,48 @@ export default function RunMigrationPage() {
                                                         </div>
                                                         <div>
                                                             <strong style={{ display: 'block', marginBottom: '0.5rem', color: '#a1a1aa' }}>Destino (SAP / Service Layer)</strong>
+                                                            {Array.isArray((row.target as any)?._resultCenterFormulaExecutions) &&
+                                                                (row.target as any)._resultCenterFormulaExecutions.length > 0 && (
+                                                                <div
+                                                                    style={{
+                                                                        marginBottom: '0.75rem',
+                                                                        padding: '0.75rem',
+                                                                        backgroundColor: '#12121a',
+                                                                        border: '1px solid var(--card-border)',
+                                                                        borderRadius: '6px',
+                                                                        fontSize: '0.72rem',
+                                                                        maxHeight: '220px',
+                                                                        overflow: 'auto',
+                                                                    }}
+                                                                >
+                                                                    <div style={{ color: 'var(--accent)', marginBottom: '0.5rem', fontWeight: 600 }}>
+                                                                        Fórmulas por centro (template → substituída → eval)
+                                                                    </div>
+                                                                    {(row.target as any)._resultCenterFormulaExecutions.map((ex: any) => (
+                                                                        <div key={ex.centerIndex} style={{ marginBottom: '0.6rem', borderLeft: '3px solid var(--success)', paddingLeft: '0.5rem' }}>
+                                                                            <div style={{ color: 'var(--secondary)' }}>
+                                                                                Centro {ex.centerIndex} · {ex.centerCode} · {ex.mode}
+                                                                            </div>
+                                                                            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                                                                <span style={{ opacity: 0.75 }}>template: </span>
+                                                                                {ex.formulaTemplate}
+                                                                            </div>
+                                                                            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#a8d4a8' }}>
+                                                                                <span style={{ opacity: 0.75 }}>substituída: </span>
+                                                                                {ex.substitutedExpression}
+                                                                            </div>
+                                                                            <div>
+                                                                                <span style={{ opacity: 0.75 }}>qty: </span>
+                                                                                {ex.quantitySubstituted} → {ex.quantity} ·{' '}
+                                                                                <span style={{ opacity: 0.75 }}>eval principal: </span>
+                                                                                {ex.evaluatedMain} ·{' '}
+                                                                                <span style={{ opacity: 0.75 }}>valor linha: </span>
+                                                                                {ex.monetaryAmount}
+                                                                            </div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
                                                             <pre style={{ fontSize: '0.75rem', padding: '0.5rem', backgroundColor: '#000', borderRadius: '4px', overflowX: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '300px' }}>
                                                                 {JSON.stringify(row.target, null, 2)}
                                                             </pre>

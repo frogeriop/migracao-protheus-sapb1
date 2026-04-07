@@ -79,3 +79,66 @@ export class TransformationUtils {
         return cgc; // Unknown
     }
 }
+
+/** Fuso usado para “hoje” (calendário comercial BR). */
+const RUNTIME_TODAY_TZ = 'America/Sao_Paulo';
+
+const RUNTIME_TODAY_PLACEHOLDER_RE = /^__RUNTIME_TODAY:([a-z0-9_]+)__$/i;
+
+/** Data de hoje formatada (usado na integração após resolver o marcador). */
+export function formatRuntimeToday(format?: string): string {
+    const f = (format || 'iso').toLowerCase();
+    const d = new Date();
+    const isoLike = new Intl.DateTimeFormat('en-CA', {
+        timeZone: RUNTIME_TODAY_TZ,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(d);
+    const [y, m, day] = isoLike.split('-');
+    if (f === 'yyyymmdd') return `${y}${m}${day}`;
+    if (f === 'br') return `${day}/${m}/${y}`;
+    if (f === 'isodt' || f === 'datetime') return `${y}-${m}-${day}T00:00:00`;
+    if (f === 'iso_z') return `${y}-${m}-${day}T00:00:00Z`;
+    return `${y}-${m}-${day}`;
+}
+
+/**
+ * Valor gravado no preview / payload até o POST de integração.
+ * Na execução, `resolveRuntimeTodayPlaceholdersDeep` troca pela data real do dia.
+ */
+export function runtimeTodayPlaceholder(format?: string): string {
+    const safe = String(format || 'iso')
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '') || 'iso';
+    return `__RUNTIME_TODAY:${safe}__`;
+}
+
+/** Substitui marcadores `__RUNTIME_TODAY:…__` em qualquer profundidade do JSON. */
+export function resolveRuntimeTodayPlaceholdersDeep(root: unknown): void {
+    if (root === null || root === undefined) return;
+    if (Array.isArray(root)) {
+        for (let i = 0; i < root.length; i++) {
+            const v = root[i];
+            if (typeof v === 'string') {
+                const m = v.match(RUNTIME_TODAY_PLACEHOLDER_RE);
+                if (m) (root as unknown[])[i] = formatRuntimeToday(m[1]);
+            } else {
+                resolveRuntimeTodayPlaceholdersDeep(v);
+            }
+        }
+        return;
+    }
+    if (typeof root === 'object') {
+        const o = root as Record<string, unknown>;
+        for (const k of Object.keys(o)) {
+            const v = o[k];
+            if (typeof v === 'string') {
+                const m = v.match(RUNTIME_TODAY_PLACEHOLDER_RE);
+                if (m) o[k] = formatRuntimeToday(m[1]);
+            } else {
+                resolveRuntimeTodayPlaceholdersDeep(v);
+            }
+        }
+    }
+}

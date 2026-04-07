@@ -21,7 +21,7 @@ interface MigrationEntity {
 }
 
 // ── Tabelas Protheus ──────────────────────────────────────────────────────────
-const STRUCTURE_TABLES = ['SA1010', 'SA2010', 'SB1010', 'SE1010', 'SE2010'];
+const STRUCTURE_TABLES = ['SA1010', 'SA2010', 'SB1010', 'SU5010', 'SE1010', 'SE2010'];
 const CUSTOM_IMPORT_ROUTES: Record<string, string> = {
     SED010: '/api/naturezas/import',
 };
@@ -35,6 +35,7 @@ const PROTHEUS_TABLES: ProtheusTable[] = [
     { code: 'SB1010', name: 'Produtos' },
     { code: 'SE1010', name: 'Contas a Receber' },
     { code: 'SE2010', name: 'Contas a Pagar' },
+    { code: 'SU5010', name: 'Contatos (cliente)' },
     { code: 'SED010', name: 'Naturezas de Lançamento', badge: 'Reimporta do zero' },
 ];
 
@@ -46,13 +47,30 @@ export default function TablesPage() {
     const [replicating, setReplicating] = useState(false);
     const [logs, setLogs] = useState<ProcessLog[]>([]);
 
+    /** SA: status cadastro + títulos em aberto (EXISTS). SE: filtros opcionais tipo/xtipo/xtpparc (fixos no backend). */
     interface ProtheusFilters {
-        status: 'active' | 'inactive' | 'all';
-        balance: 'all' | 'open';
+        status?: 'active' | 'inactive' | 'all';
+        balance?: 'all' | 'open';
+        tipo?: string;
+        xtipo?: string;
+        xtpparc?: string;
+        emissaoDe?: string;
+        emissaoAte?: string;
+        vencreaDe?: string;
+        vencreaAte?: string;
+        /** SE1010: E1_CLIENTE — um código ou vários separados por vírgula */
+        codigoCliente?: string;
+        /** SE2010: E2_FORNECE — um código ou vários separados por vírgula */
+        codigoFornecedor?: string;
+        /** SE1010: Nao = só E1_XNUMNFS em branco; Sim = só preenchido */
+        notaJaEmitida?: 'nao' | 'sim';
     }
     const [protheusFilters, setProtheusFilters] = useState<Record<string, ProtheusFilters>>({
         SA1010: { status: 'active', balance: 'all' },
-        SA2010: { status: 'active', balance: 'all' }
+        SA2010: { status: 'active', balance: 'all' },
+        SE1010: { tipo: '', xtipo: '', xtpparc: '', emissaoDe: '', emissaoAte: '', vencreaDe: '', vencreaAte: '', codigoCliente: '', notaJaEmitida: 'nao' },
+        SE2010: { tipo: '', xtipo: '', xtpparc: '', emissaoDe: '', emissaoAte: '', vencreaDe: '', vencreaAte: '', codigoFornecedor: '' },
+        SU5010: { status: 'active' },
     });
     const [expandedFilter, setExpandedFilter] = useState<string | null>(null);
 
@@ -89,7 +107,10 @@ export default function TablesPage() {
     const replicateViaStructure = async (tableName: string) => {
         const filters = {
             sa1010: protheusFilters.SA1010,
-            sa2010: protheusFilters.SA2010
+            sa2010: protheusFilters.SA2010,
+            su5010: protheusFilters.SU5010,
+            se1010: protheusFilters.SE1010,
+            se2010: protheusFilters.SE2010,
         };
 
         setLogs(prev => prev.map(l => l.table === tableName ? { ...l, status: 'processing', message: 'Verificando estrutura...' } : l));
@@ -366,8 +387,8 @@ export default function TablesPage() {
                                                 )}
                                             </div>
 
-                                            {/* Botão de Filtro apenas para SA1010/SA2010 */}
-                                            {(table.code === 'SA1010' || table.code === 'SA2010') && (
+                                            {/* Botão de Filtro: cadastros (SA) e títulos SE1/SE2 */}
+                                            {(table.code === 'SA1010' || table.code === 'SA2010' || table.code === 'SU5010' || table.code === 'SE1010' || table.code === 'SE2010') && (
                                                 <div style={{ marginLeft: 'auto', position: 'relative', zIndex: 10 }}>
                                                     <button 
                                                         type="button"
@@ -401,31 +422,181 @@ export default function TablesPage() {
                                                 borderBottom: `1px solid ${isSelected ? accent : 'var(--card-border)'}`,
                                                 backgroundColor: 'rgba(0,0,0,0.1)', borderRadius: '0 0 8px 8px' 
                                             }}>
-                                                <div style={{ display: 'flex', gap: '2rem' }}>
-                                                    <div>
-                                                        <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--secondary)', marginBottom: '0.4rem', fontWeight: 600 }}>Status do Cadastro</label>
-                                                        <select 
-                                                            value={protheusFilters[table.code].status} 
-                                                            onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], status: e.target.value as any } }))}
-                                                            style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem', outline: 'none', minWidth: '180px' }}
-                                                        >
-                                                            <option value="active">Somente Ativos (Padrão)</option>
-                                                            <option value="inactive">Somente Inativos</option>
-                                                            <option value="all">Trazer Todos</option>
-                                                        </select>
+                                                {(table.code === 'SA1010' || table.code === 'SA2010') && (
+                                                    <div style={{ display: 'flex', gap: '2rem' }}>
+                                                        <div>
+                                                            <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--secondary)', marginBottom: '0.4rem', fontWeight: 600 }}>Status do Cadastro</label>
+                                                            <select 
+                                                                value={protheusFilters[table.code].status ?? 'active'} 
+                                                                onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], status: e.target.value as 'active' | 'inactive' | 'all' } }))}
+                                                                style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem', outline: 'none', minWidth: '180px' }}
+                                                            >
+                                                                <option value="active">Somente Ativos (Padrão)</option>
+                                                                <option value="inactive">Somente Inativos</option>
+                                                                <option value="all">Trazer Todos</option>
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--secondary)', marginBottom: '0.4rem', fontWeight: 600 }}>Títulos em Aberto</label>
+                                                            <select 
+                                                                value={protheusFilters[table.code].balance ?? 'all'} 
+                                                                onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], balance: e.target.value as 'all' | 'open' } }))}
+                                                                style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem', outline: 'none', minWidth: '220px' }}
+                                                            >
+                                                                <option value="all">Trazer Todos (Padrão)</option>
+                                                                <option value="open">Somente com saldo em aberto</option>
+                                                            </select>
+                                                        </div>
                                                     </div>
-                                                    <div>
-                                                        <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--secondary)', marginBottom: '0.4rem', fontWeight: 600 }}>Títulos em Aberto</label>
-                                                        <select 
-                                                            value={protheusFilters[table.code].balance} 
-                                                            onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], balance: e.target.value as any } }))}
-                                                            style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem', outline: 'none', minWidth: '220px' }}
-                                                        >
-                                                            <option value="all">Trazer Todos (Padrão)</option>
-                                                            <option value="open">Somente com saldo em aberto</option>
-                                                        </select>
+                                                )}
+                                                {table.code === 'SU5010' && (
+                                                    <div style={{ display: 'flex', gap: '2rem' }}>
+                                                        <div>
+                                                            <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--secondary)', marginBottom: '0.4rem', fontWeight: 600 }}>Status (U5_MSBLQL)</label>
+                                                            <select 
+                                                                value={protheusFilters.SU5010?.status ?? 'active'} 
+                                                                onChange={e => setProtheusFilters(p => ({ ...p, SU5010: { ...p.SU5010, status: e.target.value as 'active' | 'inactive' | 'all' } }))}
+                                                                style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem', outline: 'none', minWidth: '180px' }}
+                                                            >
+                                                                <option value="active">Somente habilitados (2)</option>
+                                                                <option value="inactive">Somente inativos (1)</option>
+                                                                <option value="all">Trazer todos</option>
+                                                            </select>
+                                                        </div>
                                                     </div>
-                                                </div>
+                                                )}
+                                                {(table.code === 'SE1010' || table.code === 'SE2010') && (() => {
+                                                    const prefix = table.code === 'SE1010' ? 'E1' : 'E2';
+                                                    const f = protheusFilters[table.code];
+                                                    return (
+                                                        <div>
+                                                            <p style={{ fontSize: '0.78rem', color: 'var(--secondary)', marginBottom: '0.75rem', lineHeight: 1.5 }}>
+                                                                Filtro base (sempre aplicado): {table.code === 'SE1010'
+                                                                    ? "E1_FILIAL = '01', E1_SALDO &gt; 0, E1_TIPO sem '-' no conteúdo (ex.: IR-, CF-)"
+                                                                    : "E2_SALDO &gt; 0, E2_TIPO sem '-' no conteúdo (ex.: IR-, CF-)"}
+                                                            </p>
+                                                            <div style={{ marginBottom: '0.75rem' }}>
+                                                                {table.code === 'SE1010' && (
+                                                                    <div>
+                                                                        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>
+                                                                            E1_CLIENTE — código do cliente (opcional)
+                                                                        </label>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={f?.codigoCliente ?? ''}
+                                                                            onChange={e => setProtheusFilters(p => ({ ...p, SE1010: { ...p.SE1010, codigoCliente: e.target.value } }))}
+                                                                            placeholder="ex.: 000029 ou vários: 000029, 000030"
+                                                                            style={{ width: '100%', maxWidth: '420px', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                        />
+                                                                    </div>
+                                                                )}
+                                                                {table.code === 'SE2010' && (
+                                                                    <div>
+                                                                        <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>
+                                                                            E2_FORNECE — código do fornecedor (opcional)
+                                                                        </label>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={f?.codigoFornecedor ?? ''}
+                                                                            onChange={e => setProtheusFilters(p => ({ ...p, SE2010: { ...p.SE2010, codigoFornecedor: e.target.value } }))}
+                                                                            placeholder="ex.: 000100 ou vários: 000100, 000200"
+                                                                            style={{ width: '100%', maxWidth: '420px', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                        />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '0.75rem' }}>
+                                                                <div>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>{prefix}_TIPO</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={f?.tipo ?? ''}
+                                                                        onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], tipo: e.target.value } }))}
+                                                                        placeholder="opcional"
+                                                                        style={{ width: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>{prefix}_XTIPO</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={f?.xtipo ?? ''}
+                                                                        onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], xtipo: e.target.value } }))}
+                                                                        placeholder="opcional"
+                                                                        style={{ width: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>{prefix}_XTPPARC</label>
+                                                                    <input
+                                                                        type="text"
+                                                                        value={f?.xtpparc ?? ''}
+                                                                        onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], xtpparc: e.target.value } }))}
+                                                                        placeholder="opcional"
+                                                                        style={{ width: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                            {table.code === 'SE1010' && (
+                                                                <div style={{ marginTop: '0.85rem' }}>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>
+                                                                        Titulo com Nota Ja Emitida (S/N)
+                                                                    </label>
+                                                                    <select
+                                                                        value={f?.notaJaEmitida ?? 'nao'}
+                                                                        onChange={e => setProtheusFilters(p => ({
+                                                                            ...p,
+                                                                            SE1010: { ...p.SE1010, notaJaEmitida: e.target.value as 'nao' | 'sim' },
+                                                                        }))}
+                                                                        style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem', outline: 'none', minWidth: '220px' }}
+                                                                    >
+                                                                        <option value="nao">Nao</option>
+                                                                        <option value="sim">Sim</option>
+                                                                    </select>
+                                                                </div>
+                                                            )}
+                                                            <div style={{ marginTop: '0.85rem', fontSize: '0.72rem', color: 'var(--secondary)', fontWeight: 600, marginBottom: '0.35rem' }}>Datas (opcional — comparado como YYYYMMDD no Protheus)</div>
+                                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '0.75rem' }}>
+                                                                <div>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>{prefix}_EMISSAO — de</label>
+                                                                    <input
+                                                                        type="date"
+                                                                        value={f?.emissaoDe ?? ''}
+                                                                        onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], emissaoDe: e.target.value } }))}
+                                                                        style={{ width: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>{prefix}_EMISSAO — até</label>
+                                                                    <input
+                                                                        type="date"
+                                                                        value={f?.emissaoAte ?? ''}
+                                                                        onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], emissaoAte: e.target.value } }))}
+                                                                        style={{ width: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>{prefix}_VENCREA — de</label>
+                                                                    <input
+                                                                        type="date"
+                                                                        value={f?.vencreaDe ?? ''}
+                                                                        onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], vencreaDe: e.target.value } }))}
+                                                                        style={{ width: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label style={{ display: 'block', fontSize: '0.72rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 600 }}>{prefix}_VENCREA — até</label>
+                                                                    <input
+                                                                        type="date"
+                                                                        value={f?.vencreaAte ?? ''}
+                                                                        onChange={e => setProtheusFilters(p => ({ ...p, [table.code]: { ...p[table.code], vencreaAte: e.target.value } }))}
+                                                                        style={{ width: '100%', backgroundColor: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--card-border)', padding: '0.4rem', borderRadius: '4px', fontSize: '0.8rem' }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })()}
                                             </div>
                                         )}
                                     </div>

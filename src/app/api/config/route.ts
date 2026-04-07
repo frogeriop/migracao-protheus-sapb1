@@ -1,40 +1,6 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs/promises';
-import path from 'path';
-import { AppConfig } from '@/types/config';
-
-const CONFIG_FILE = path.join(process.cwd(), 'config.json');
-
-const defaultConfig: AppConfig = {
-    protheus: {
-        server: 'localhost',
-        database: '',
-        user: '',
-        password: '',
-        port: 1433,
-        driver: 'msnodesqlv8'
-    },
-    sap: {
-        serviceLayerUrl: 'https://myserver:50000/b1s/v1',
-        companyDB: '',
-        userName: '',
-        password: '',
-        language: '29' // Portuguese - Brazil
-    },
-    supabase: {
-        url: 'https://tdieqskomdgjjohywgzo.supabase.co',
-        key: ''
-    }
-};
-
-async function getConfig(): Promise<AppConfig> {
-    try {
-        const data = await fs.readFile(CONFIG_FILE, 'utf-8');
-        return { ...defaultConfig, ...JSON.parse(data) };
-    } catch (error) {
-        return defaultConfig;
-    }
-}
+import { CONFIG_FILE, getConfig } from '@/lib/config-helper';
 
 export async function GET() {
     const config = await getConfig();

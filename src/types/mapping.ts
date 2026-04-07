@@ -12,7 +12,8 @@ export type RuleType =
     | 'date_iso'
     | 'concat'
     | 'expression'         // NEW: expressão com templates (e.g. {e1_num}/{e1_titulo})
-    | 'static';            // NEW: valor fixo (literal), ignorando source
+    | 'static'             // NEW: valor fixo (literal), ignorando source
+    | 'today';             // data do dia na integração (preview = marcador; execute substitui)
 
 export interface ValueMap {
     from: string;
@@ -39,7 +40,7 @@ export interface CompositeKey {
 
 export interface MappingRule {
     type: RuleType;
-    value?: string;            // prefix/suffix/static: valor literal
+    value?: string;            // prefix/suffix/static: valor literal | today: formato (iso, br, yyyymmdd, isodt, iso_z)
     expression?: string;       // expression: template string (ex: {e1_num}/{e1_titulo})
     map?: ValueMap[];          // map: de/para
     part?: 'street' | 'number' | 'complement' | 'type'; // address_part
@@ -54,7 +55,7 @@ export interface MappingRule {
 }
 
 export interface FieldMapping {
-    source: string;   // Campo Protheus (ex: e1_cliente) — ignorado para rule.type==='static'
+    source: string;   // Campo Protheus (ex: e1_cliente) — ignorado para static / expression / today
     target: string;   // Campo SAP (ex: CardCode)
     rule?: MappingRule;
 }
@@ -75,11 +76,93 @@ export interface DocumentLinesMapping {
     fields: FieldMapping[];
 }
 
+/**
+ * SE1010 → Orders: desmembra um título em várias linhas de DocumentLines.
+ * Cada linha tem ItemCode e fórmulas próprias (placeholders {e1_valor}, {campo}).
+ * Se `orderLineTemplates.lines` tiver pelo menos uma linha válida, substitui
+ * o DocumentLines gerado pelo mapeamento plano (uma linha por título).
+ */
+export interface OrderLineTemplate {
+    /** ItemCode SAP (literal ou template com {campo}) */
+    itemCode: string;
+    /** Expressão com {campo}; default "1" */
+    quantityFormula?: string;
+    /** Use com Quantity: valor unitário da linha */
+    unitPriceFormula?: string;
+    /** Alternativa: total da linha (Quantity 1); não use junto com unitPriceFormula */
+    lineTotalFormula?: string;
+}
+
+export interface OrderLineTemplatesConfig {
+    lines: OrderLineTemplate[];
+    /** Campo numérico do título para aviso de conferência (ex.: e1_valor) */
+    compareTotalField?: string;
+    /** Ajusta a última linha para fechar com compareTotalField (diferença de arredondamento) */
+    reconcileLastLine?: boolean;
+}
+
+/**
+ * SE1010 → Orders: um único ItemCode (linha base do mapeamento), valor repartido em
+ * vários Centros de Resultado (tipicamente DocumentLines.CostingCode2 = Dimensão 2).
+ * Se `resultCenterDistribution.lines` tiver itens válidos, tem precedência sobre
+ * `orderLineTemplates` (não combina os dois).
+ */
+export interface ResultCenterLine {
+    /** Código do centro no SAP (ou template com {campo}) */
+    centerCode: string;
+    /** Legado: preferir `lineTotalFormula` (tela simplificada = um único “Valor”) */
+    quantityFormula?: string;
+    unitPriceFormula?: string;
+    /** Valor total da linha (fórmula); no motor vira Quantity=1 e UnitPrice=avaliado */
+    lineTotalFormula?: string;
+}
+
+/** Debug do preview: expressão numérica após substituir placeholders (o que o eval executa). */
+export interface ResultCenterFormulaExecution {
+    centerIndex: number;
+    centerCode: string;
+    mode: 'lineTotal' | 'unitPrice';
+    formulaTemplate: string;
+    /** Expressão após `substitutePlaceholdersNumeric` — entrada de `evalNumericExpression`. */
+    substitutedExpression: string;
+    quantitySubstituted: string;
+    quantity: number;
+    /** Resultado do eval da fórmula principal (valor de UnitPrice ou line-total conforme o modo). */
+    evaluatedMain: number;
+    /** `Quantity * UnitPrice` da linha montada (equivale a `lineMonetaryAmount`). */
+    monetaryAmount: number;
+}
+
+export interface ResultCenterDistributionConfig {
+    lines: ResultCenterLine[];
+    compareTotalField?: string;
+    reconcileLastLine?: boolean;
+    /**
+     * Campo na linha do pedido onde gravar o código do centro.
+     * CostingCode2 costuma ser Dimensão 2 (Centro de resultado) — validar no seu SAP.
+     */
+    lineDimensionField?: 'CostingCode' | 'CostingCode2';
+    /**
+     * multiLine (padrão se ausente): várias linhas com o mesmo ItemCode e CostingCode2 por centro.
+     * singleLine: uma linha com valor total; o rateio por centro deve ser concluído no SAP (distribuição manual / dimensões).
+     */
+    distributionMode?: 'multiLine' | 'singleLine';
+    /**
+     * Dimensão usada em DistributionRules.InWhichDimension (ex.: 2 = CostingCode2 / centro de resultado).
+     * Usado ao criar OOCR via Service Layer após inclusão do pedido.
+     */
+    inWhichDimension?: number;
+}
+
 export interface TableMapping {
     sourceTable: string;    // ex: SE1010
     targetObject: string;   // ex: Orders (Sales Order), Invoices, JournalEntries...
-    fields: FieldMapping[]; // Campos do cabeçalho
-    lines?: DocumentLinesMapping; // Mapeamento das linhas (itens do documento)
+    fields: FieldMapping[]; // Campos de cabeçalho + linha única (quando sem templates)
+    lines?: DocumentLinesMapping; // Legado (não usado no pipeline atual)
+    /** SE1010 → Orders: várias linhas por fórmula (tem precedência sobre mapeamento plano de DocumentLines) */
+    orderLineTemplates?: OrderLineTemplatesConfig;
+    /** SE1010 → Orders: mesmo produto, várias linhas com CostingCode/CostingCode2 (precede orderLineTemplates) */
+    resultCenterDistribution?: ResultCenterDistributionConfig;
     keyField?: string;      // Campo SAP usado como chave de deduplicação (ex: DocNum)
 }
 

@@ -5,16 +5,33 @@ import { Layers, ArrowRight, Settings, Plus, Save, Trash2, Edit, Play, Loader2 }
 import { createPortal } from 'react-dom';
 import { useMapping } from '@/hooks/useMapping';
 import { useConfig } from '@/hooks/useConfig';
-import { FieldMapping, MappingRule, RuleType, ValueMap } from '@/types/mapping';
-import { TransformationUtils } from '@/utils/transformations';
+import { FieldMapping, MappingRule, OrderLineTemplate, OrderLineTemplatesConfig, ResultCenterDistributionConfig, ResultCenterLine, RuleType, ValueMap } from '@/types/mapping';
+import { TransformationUtils, runtimeTodayPlaceholder } from '@/utils/transformations';
+import { buildOrderLinesFromTemplates } from '@/utils/orderLineTemplates';
+import { buildResultCenterDocumentLines } from '@/utils/resultCenterDistribution';
 import { supabase } from '@/lib/supabase';
 
 type TableOption = { code: string; name: string; targetObject?: string; isExcel?: boolean; pgTableName?: string };
+
+/** Preview local: campos vêm como DocumentLines aninhado (API) ou chaves planas "DocumentLines.ItemCode". */
+function pickDocumentLineBaseFromPreviewTarget(tr: Record<string, any>): Record<string, any> {
+    if (tr.DocumentLines && typeof tr.DocumentLines === 'object' && !Array.isArray(tr.DocumentLines)) {
+        return { ...tr.DocumentLines };
+    }
+    const base: Record<string, any> = {};
+    for (const k of Object.keys(tr)) {
+        if (k.startsWith('DocumentLines.')) {
+            base[k.slice('DocumentLines.'.length)] = tr[k];
+        }
+    }
+    return base;
+}
 
 const PROTHEUS_TABLE_OPTIONS: TableOption[] = [
     { code: 'SA1010', name: 'Clientes', targetObject: 'BusinessPartners', isExcel: false },
     { code: 'SA2010', name: 'Fornecedores', targetObject: 'BusinessPartners', isExcel: false },
     { code: 'SB1010', name: 'Produtos', targetObject: 'Items', isExcel: false },
+    { code: 'SU5010', name: 'Contatos (cliente)', targetObject: 'ContactEmployees', isExcel: false },
     { code: 'SE1010', name: 'Contas a Receber', targetObject: 'Orders', isExcel: false },
     { code: 'SE2010', name: 'Contas a Pagar', targetObject: 'JournalEntries', isExcel: false },
 ];
@@ -46,6 +63,7 @@ const COMMON_SAP_FIELDS: { [key: string]: string[] } = {
         'JournalEntryLines.AccountCode', 'JournalEntryLines.Debit', 'JournalEntryLines.Credit',
         'JournalEntryLines.LineMemo', 'JournalEntryLines.CostingCode', 'JournalEntryLines.ProjectCode',
     ],
+    'ContactEmployees': ['CardCode', 'Name', 'Position', 'Phone1', 'E_Mail'],
     // Legacy (mantido para compatibilidade)
     'Invoices': ['DocEntry', 'DocNum', 'CardCode', 'CardName', 'DocDate', 'DocDueDate', 'DocTotal', 'Comments'],
     'PurchaseInvoices': ['DocEntry', 'DocNum', 'CardCode', 'CardName', 'DocDate', 'DocDueDate', 'DocTotal', 'Comments']
@@ -136,6 +154,61 @@ export default function MappingPage() {
 
     const [editingIndex, setEditingIndex] = useState<number>(-1);
 
+    /** SE1010 → Orders: várias linhas por fórmula (orderLineTemplates) */
+    const [orderLineTplDraft, setOrderLineTplDraft] = useState<OrderLineTemplatesConfig>({
+        lines: [],
+        compareTotalField: 'e1_valor',
+        reconcileLastLine: false,
+    });
+
+    const [resultCenterTplDraft, setResultCenterTplDraft] = useState<ResultCenterDistributionConfig>({
+        lines: [],
+        compareTotalField: 'e1_valor',
+        reconcileLastLine: false,
+        lineDimensionField: 'CostingCode2',
+        distributionMode: 'singleLine',
+        inWhichDimension: 2,
+    });
+
+    useEffect(() => {
+        if (selectedTableCode !== 'SE1010' || rawTargetObject !== 'Orders') return;
+        const m = mappings[selectedTableCode];
+        const ot = m?.orderLineTemplates;
+        if (ot && Array.isArray(ot.lines)) {
+            setOrderLineTplDraft({
+                lines: ot.lines.length > 0 ? ot.lines.map((l: OrderLineTemplate) => ({ ...l })) : [],
+                compareTotalField: ot.compareTotalField ?? 'e1_valor',
+                reconcileLastLine: ot.reconcileLastLine ?? false,
+            });
+        } else {
+            setOrderLineTplDraft({
+                lines: [],
+                compareTotalField: 'e1_valor',
+                reconcileLastLine: false,
+            });
+        }
+        const rc = m?.resultCenterDistribution;
+        if (rc && Array.isArray(rc.lines)) {
+            setResultCenterTplDraft({
+                lines: rc.lines.length > 0 ? rc.lines.map((l: ResultCenterLine) => ({ ...l })) : [],
+                compareTotalField: rc.compareTotalField ?? 'e1_valor',
+                reconcileLastLine: rc.reconcileLastLine ?? false,
+                lineDimensionField: rc.lineDimensionField ?? 'CostingCode2',
+                distributionMode: rc.distributionMode,
+                inWhichDimension: rc.inWhichDimension ?? 2,
+            });
+        } else {
+            setResultCenterTplDraft({
+                lines: [],
+                compareTotalField: 'e1_valor',
+                reconcileLastLine: false,
+                lineDimensionField: 'CostingCode2',
+                distributionMode: 'singleLine',
+                inWhichDimension: 2,
+            });
+        }
+    }, [selectedTableCode, rawTargetObject, mappings]);
+
     // Lookup Composite state
     const [lookupFallback, setLookupFallback] = useState('');
     // For lookup_composite: source fields (two inputs) and lookup key fields (two inputs)
@@ -147,6 +220,7 @@ export default function MappingPage() {
         sa1010: ['a1_filial', 'a1_cod', 'a1_loja', 'a1_nome', 'a1_nreduz', 'a1_cgc', 'a1_tipo', 'a1_est', 'a1_mun', 'a1_tel', 'a1_email', 'a1_end', '__sap_id'],
         sa2010: ['a2_filial', 'a2_cod', 'a2_loja', 'a2_nome', 'a2_nreduz', 'a2_cgc', 'a2_tipo', 'a2_est', 'a2_mun', 'a2_tel', 'a2_email', 'a2_end', '__sap_id'],
         sb1010: ['b1_filial', 'b1_cod', 'b1_desc', 'b1_tipo', 'b1_um', 'b1_grupo', 'b1_localiz', '__sap_id'],
+        su5010: ['u5_filial', 'u5_codcont', 'u5_cliente', 'u5_loja', 'u5_contat', 'u5_email', 'u5_fcom1', 'u5_fone', 'u5_ddd', 'u5_dfuncao', 'u5_funcao', '__sap_id'],
         sed010: ['ed_filial', 'ed_codigo', 'ed_descri', 'ed_naturez', 'sap_account_code', 'sap_account_name'],
         sap_items: ['item_code', 'item_name', 'item_type', 'svc_code', 'u_svc_code', 'purchase', 'sales', 'imported_at'],
         sap_chart_of_accounts: ['code', 'name', 'account_type', 'external_code', 'currency', 'father_account', 'balance'],
@@ -236,7 +310,13 @@ export default function MappingPage() {
     const openRuleModal = (field: FieldMapping, index: number) => {
         setCurrentField({ ...field });
         setRuleType(field.rule?.type || 'none');
-        setRuleValue(field.rule?.expression || field.rule?.value || '');
+        if (field.rule?.type === 'expression') {
+            setRuleValue(field.rule?.expression || '');
+        } else if (field.rule?.type === 'today') {
+            setRuleValue(field.rule?.value || 'iso');
+        } else {
+            setRuleValue(field.rule?.value || field.rule?.expression || '');
+        }
         setMapValues(field.rule?.map || []);
         setCondField(field.rule?.condition?.field || '');
         setCondValue(field.rule?.condition?.value || '');
@@ -280,6 +360,8 @@ export default function MappingPage() {
             rule.value = ruleValue;
         } else if (ruleType === 'static') {
             rule.value = ruleValue;
+        } else if (ruleType === 'today') {
+            rule.value = (ruleValue || 'iso').trim() || 'iso';
         } else if (ruleType === 'expression') {
             rule.expression = ruleValue;
         } else if (ruleType === 'map') {
@@ -308,9 +390,9 @@ export default function MappingPage() {
             rule.condition = { field: condField, operator: 'equals', value: condValue };
         }
 
-        // Para regra 'static' e 'expression', source não é necessário — limpa para evitar confusão
+        // Para regra 'static', 'expression' e 'today', source não é necessário — limpa para evitar confusão
         const updatedField = { ...newFields[editingIndex], rule };
-        if (ruleType === 'static' || ruleType === 'expression') updatedField.source = '';
+        if (ruleType === 'static' || ruleType === 'expression' || ruleType === 'today') updatedField.source = '';
         newFields[editingIndex] = updatedField;
         updateTableMapping(selectedTableCode, { ...currentMapping, fields: newFields });
         setShowRuleModal(false);
@@ -360,7 +442,11 @@ export default function MappingPage() {
                 if (!field.target) return;
 
                 // Para tipo 'static', 'sap_sequence' ou 'expression', source não é obrigatório
-                const isSourceOptional = field.rule?.type === 'static' || field.rule?.type === 'sap_sequence' || field.rule?.type === 'expression';
+                const isSourceOptional =
+                    field.rule?.type === 'static' ||
+                    field.rule?.type === 'sap_sequence' ||
+                    field.rule?.type === 'expression' ||
+                    field.rule?.type === 'today';
                 if (!isSourceOptional && !field.source) return;
 
                 const originalValue = field.source ? sourceRecord[field.source] : undefined;
@@ -380,6 +466,10 @@ export default function MappingPage() {
 
                 if (field.rule) {
                     switch (field.rule.type) {
+                        case 'today': {
+                            finalValue = runtimeTodayPlaceholder(field.rule.value || 'iso');
+                            break;
+                        }
                         case 'static': {
                             // Auto-coerção: '1' → 1, 'true'/'false' → boolean, resto → string
                             const raw = field.rule.value ?? null;
@@ -485,6 +575,50 @@ export default function MappingPage() {
                 }
             }
 
+            // SE1010 → Orders: centros de resultado (precede linhas por produto)
+            if (selectedTableCode === 'SE1010' && currentMapping.targetObject === 'Orders') {
+                const rcDraftHas = resultCenterTplDraft.lines.some(l => String(l.centerCode || '').trim());
+                const rcSource = rcDraftHas ? resultCenterTplDraft : currentMapping.resultCenterDistribution;
+                if (rcSource?.lines?.length) {
+                    const baseLine = pickDocumentLineBaseFromPreviewTarget(targetRecord);
+                    const builtRc = buildResultCenterDocumentLines(sourceRecord, {
+                        lines: rcSource.lines.filter(l => String(l.centerCode || '').trim()),
+                        compareTotalField: rcSource.compareTotalField,
+                        reconcileLastLine: rcSource.reconcileLastLine,
+                        lineDimensionField: rcSource.lineDimensionField,
+                        distributionMode: rcSource.distributionMode,
+                    }, baseLine);
+                    if (builtRc.lines.length > 0) {
+                        targetRecord.DocumentLines = builtRc.lines;
+                        (targetRecord as any)._resultCenterFormulaExecutions = builtRc.formulaExecutions;
+                        (targetRecord as any)._resultCenterDistributionMeta = {
+                            inWhichDimension: rcSource.inWhichDimension ?? 2,
+                            distributionMode: rcSource.distributionMode,
+                            lineDimensionField: rcSource.lineDimensionField ?? 'CostingCode2',
+                        };
+                        if (builtRc.warnings.length > 0) {
+                            (targetRecord as any)._resultCenterDistributionWarnings = builtRc.warnings;
+                        }
+                    }
+                } else {
+                    const tplDraftHasLines = orderLineTplDraft.lines.some(l => String(l.itemCode || '').trim());
+                    const tplSource = tplDraftHasLines ? orderLineTplDraft : currentMapping.orderLineTemplates;
+                    if (tplSource?.lines?.length) {
+                        const built = buildOrderLinesFromTemplates(sourceRecord, {
+                            lines: tplSource.lines.filter(l => String(l.itemCode || '').trim()),
+                            compareTotalField: tplSource.compareTotalField,
+                            reconcileLastLine: tplSource.reconcileLastLine,
+                        });
+                        if (built.lines.length > 0) {
+                            targetRecord.DocumentLines = built.lines;
+                            if (built.warnings.length > 0) {
+                                (targetRecord as any)._orderLineTemplateWarnings = built.warnings;
+                            }
+                        }
+                    }
+                }
+            }
+
             setPreviewData({ source: sourceRecord, target: targetRecord });
             setShowPreview(true);
 
@@ -497,6 +631,93 @@ export default function MappingPage() {
     };
 
     const currentMapping = mappings[selectedTableCode] || { sourceTable: selectedTableCode, targetObject: rawTargetObject, fields: [] };
+
+    const saveOrderLineTemplates = () => {
+        const lines = orderLineTplDraft.lines
+            .filter(l => String(l.itemCode || '').trim())
+            .map(l => ({
+                itemCode: l.itemCode.trim(),
+                quantityFormula: l.quantityFormula?.trim() || undefined,
+                unitPriceFormula: l.unitPriceFormula?.trim() || undefined,
+                lineTotalFormula: l.lineTotalFormula?.trim() || undefined,
+            }));
+        updateTableMapping(selectedTableCode, {
+            ...currentMapping,
+            orderLineTemplates: {
+                lines,
+                compareTotalField: orderLineTplDraft.compareTotalField?.trim() || undefined,
+                reconcileLastLine: orderLineTplDraft.reconcileLastLine,
+            },
+        });
+    };
+
+    const addOrderLineRow = () => {
+        setOrderLineTplDraft(prev => ({
+            ...prev,
+            lines: [...prev.lines, { itemCode: '', unitPriceFormula: '' }],
+        }));
+    };
+
+    const updateOrderLineRow = (idx: number, patch: Partial<OrderLineTemplate>) => {
+        setOrderLineTplDraft(prev => ({
+            ...prev,
+            lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...patch } : l)),
+        }));
+    };
+
+    const removeOrderLineRow = (idx: number) => {
+        setOrderLineTplDraft(prev => ({
+            ...prev,
+            lines: prev.lines.filter((_, i) => i !== idx),
+        }));
+    };
+
+    const saveResultCenterDistribution = () => {
+        const lines = resultCenterTplDraft.lines
+            .filter(l => String(l.centerCode || '').trim())
+            .map(l => ({
+                centerCode: l.centerCode.trim(),
+                quantityFormula: l.quantityFormula?.trim() || undefined,
+                unitPriceFormula: l.unitPriceFormula?.trim() || undefined,
+                lineTotalFormula: l.lineTotalFormula?.trim() || undefined,
+            }));
+        updateTableMapping(selectedTableCode, {
+            ...currentMapping,
+            resultCenterDistribution: {
+                lines,
+                compareTotalField: resultCenterTplDraft.compareTotalField?.trim() || undefined,
+                reconcileLastLine: resultCenterTplDraft.reconcileLastLine,
+                lineDimensionField: resultCenterTplDraft.lineDimensionField ?? 'CostingCode2',
+                distributionMode: resultCenterTplDraft.distributionMode,
+                inWhichDimension: resultCenterTplDraft.inWhichDimension ?? 2,
+            },
+        });
+    };
+
+    const addResultCenterRow = () => {
+        setResultCenterTplDraft(prev => ({
+            ...prev,
+            lines: [...prev.lines, { centerCode: '', lineTotalFormula: '' }],
+        }));
+    };
+
+    /** Exibe um único campo "Valor": prioriza total da linha; senão legado (preço unit.). */
+    const resultCenterValorDisplay = (line: ResultCenterLine) =>
+        (line.lineTotalFormula?.trim() ? line.lineTotalFormula : line.unitPriceFormula) ?? '';
+
+    const updateResultCenterRow = (idx: number, patch: Partial<ResultCenterLine>) => {
+        setResultCenterTplDraft(prev => ({
+            ...prev,
+            lines: prev.lines.map((l, i) => (i === idx ? { ...l, ...patch } : l)),
+        }));
+    };
+
+    const removeResultCenterRow = (idx: number) => {
+        setResultCenterTplDraft(prev => ({
+            ...prev,
+            lines: prev.lines.filter((_, i) => i !== idx),
+        }));
+    };
 
     return (
         <div className="container" style={{ paddingBottom: '4rem' }}>
@@ -574,7 +795,7 @@ export default function MappingPage() {
                             <input
                                 type="text"
                                 className="input"
-                                placeholder="Filtrar (Ex: Cód, Nome, CNPJ)..."
+                                placeholder="Filtrar (Ex: Cód, nº título e1_num, Nome, CNPJ)..."
                                 value={previewSearch}
                                 onChange={e => setPreviewSearch(e.target.value)}
                                 onKeyDown={e => { if (e.key === 'Enter') handlePreview() }}
@@ -621,6 +842,21 @@ export default function MappingPage() {
                                                 fontStyle: 'italic',
                                             }}>
                                                 📌 Valor Fixo: <strong>{field.rule.value ?? '(vazio)'}</strong>
+                                            </div>
+                                        ) : field.rule?.type === 'today' ? (
+                                            <div style={{
+                                                padding: '0.5rem 0.75rem',
+                                                backgroundColor: 'rgba(var(--accent-rgb, 56,189,248),0.12)',
+                                                border: '1px dashed var(--accent)',
+                                                borderRadius: '8px',
+                                                fontSize: '0.82rem',
+                                                color: 'var(--accent)',
+                                                fontStyle: 'italic',
+                                            }}>
+                                                📅 Data do dia (integração): formato <strong>{field.rule.value || 'iso'}</strong>
+                                                <span style={{ display: 'block', marginTop: '0.25rem', opacity: 0.9 }}>
+                                                    Preview usa marcador; no POST ao SAP vira a data corrente (America/São_Paulo).
+                                                </span>
                                             </div>
                                         ) : field.rule?.type === 'expression' ? (
                                             <div style={{
@@ -685,6 +921,278 @@ export default function MappingPage() {
                             ))
                         )}
                     </div>
+
+                    {selectedTableCode === 'SE1010' && rawTargetObject === 'Orders' && (
+                        <div style={{ marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--card-border)' }}>
+                            <h3 style={{ fontSize: '1.05rem', marginBottom: '0.5rem', color: 'var(--accent)' }}>
+                                Centros de resultado (Dimensão 2)
+                            </h3>
+                            <p style={{ fontSize: '0.82rem', color: 'var(--secondary)', marginBottom: '1rem', lineHeight: 1.45 }}>
+                                Mantém <strong>um único ItemCode</strong> vindo do mapeamento (ex.: <code>e1_xtipo</code> → item). Com{' '}
+                                <strong>linha única</strong> e <strong>dois ou mais centros</strong>, na integração o sistema cria uma{' '}
+                                <strong>DistributionRules</strong> primeiro (FactorCode gerado), depois o pedido com <strong>OcrCode</strong> na linha igual ao FactorCode.
+                                Na integração, após criar a OOCR, o sistema grava também o <strong>centro principal</strong> (maior valor no rateio) no campo de dimensão (<code>CostingCode</code>/<code>CostingCode2</code>… conforme a dimensão da regra), para a grade mostrar o centro de custo/resultado.
+                                Se o Service Layer não declarar <code>OcrCode</code> no <code>$metadata</code>, a coluna &quot;Regra de distribuição&quot; pode continuar vazia — a OOCR ainda é criada.
+                                O rateio indicativo continua nos avisos do preview. Com <strong>várias linhas</strong>, o sistema gera uma linha por centro (sem criação automática de OOCR).
+                                Se esta seção tiver linhas salvas, ela <strong>substitui</strong> o desmembramento por vários produtos abaixo.
+                            </p>
+                            <label
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'flex-start',
+                                    gap: '0.5rem',
+                                    cursor: 'pointer',
+                                    fontSize: '0.85rem',
+                                    marginBottom: '1rem',
+                                    maxWidth: '52rem',
+                                    lineHeight: 1.45,
+                                }}
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={resultCenterTplDraft.distributionMode === 'singleLine'}
+                                    onChange={e =>
+                                        setResultCenterTplDraft(p => ({
+                                            ...p,
+                                            distributionMode: e.target.checked ? 'singleLine' : 'multiLine',
+                                        }))
+                                    }
+                                    style={{ marginTop: '0.15rem' }}
+                                />
+                                <span>
+                                    <strong>Uma única linha de produto</strong> (valor total no pedido). O rateio por centro não é gravado como várias linhas no Service Layer;
+                                    use a <strong>distribuição manual</strong> de dimensões / centro de resultado no SAP para espelhar os valores do mapeamento.
+                                </span>
+                            </label>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem', alignItems: 'flex-end' }}>
+                                <div>
+                                    <label className="label" style={{ fontSize: '0.8rem' }}>Campo na linha SAP</label>
+                                    <select
+                                        className="input"
+                                        style={{ width: '200px' }}
+                                        value={resultCenterTplDraft.lineDimensionField ?? 'CostingCode2'}
+                                        onChange={e =>
+                                            setResultCenterTplDraft(p => ({
+                                                ...p,
+                                                lineDimensionField: e.target.value as 'CostingCode' | 'CostingCode2',
+                                            }))
+                                        }
+                                    >
+                                        <option value="CostingCode2">CostingCode2 (geralmente Dim. 2)</option>
+                                        <option value="CostingCode">CostingCode (geralmente Dim. 1)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="label" style={{ fontSize: '0.8rem' }}>Dim. (regra OOCR)</label>
+                                    <input
+                                        type="number"
+                                        className="input"
+                                        style={{ width: '72px' }}
+                                        min={1}
+                                        max={5}
+                                        value={resultCenterTplDraft.inWhichDimension ?? 2}
+                                        onChange={e =>
+                                            setResultCenterTplDraft(p => ({
+                                                ...p,
+                                                inWhichDimension: Math.min(5, Math.max(1, parseInt(e.target.value, 10) || 2)),
+                                            }))
+                                        }
+                                        title="Dimensão da regra OOCR: no pedido grava OcrCode (dim 1) ou OcrCode2 (dim 2), etc. Deve bater com a dimensão do centro de resultado."
+                                    />
+                                </div>
+                                <div>
+                                    <label className="label" style={{ fontSize: '0.8rem' }}>Conferência total (opcional)</label>
+                                    <input
+                                        className="input"
+                                        style={{ width: '160px' }}
+                                        value={resultCenterTplDraft.compareTotalField ?? ''}
+                                        onChange={e => setResultCenterTplDraft(p => ({ ...p, compareTotalField: e.target.value }))}
+                                        placeholder="e1_valor"
+                                    />
+                                </div>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={resultCenterTplDraft.reconcileLastLine ?? false}
+                                        onChange={e => setResultCenterTplDraft(p => ({ ...p, reconcileLastLine: e.target.checked }))}
+                                    />
+                                    Ajustar última linha para fechar o total
+                                </label>
+                                <button type="button" className="btn btn-primary" onClick={saveResultCenterDistribution}>
+                                    <Save size={16} style={{ marginRight: '0.35rem' }} />
+                                    Salvar centros de resultado
+                                </button>
+                                <button type="button" className="btn btn-secondary" onClick={addResultCenterRow}>
+                                    <Plus size={16} style={{ marginRight: '0.35rem' }} />
+                                    Adicionar centro
+                                </button>
+                            </div>
+                            {resultCenterTplDraft.lines.length === 0 ? (
+                                <p style={{ fontSize: '0.85rem', color: 'var(--secondary)' }}>
+                                    Nenhum centro. Deixe vazio para usar apenas o mapeamento plano ou o desmembramento por produto (bloco seguinte).
+                                </p>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                    {resultCenterTplDraft.lines.map((line, idx) => (
+                                        <div
+                                            key={idx}
+                                            style={{
+                                                display: 'grid',
+                                                gridTemplateColumns: 'minmax(140px, 1fr) minmax(200px, 2fr) 40px',
+                                                gap: '0.75rem',
+                                                alignItems: 'start',
+                                                padding: '0.75rem',
+                                                backgroundColor: 'var(--background)',
+                                                borderRadius: '8px',
+                                                border: '1px solid var(--card-border)',
+                                            }}
+                                        >
+                                            <div>
+                                                <label className="label" style={{ fontSize: '0.75rem' }}>Código do Centro</label>
+                                                <input
+                                                    className="input"
+                                                    value={line.centerCode}
+                                                    onChange={e => updateResultCenterRow(idx, { centerCode: e.target.value })}
+                                                    placeholder="D001"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="label" style={{ fontSize: '0.75rem' }}>Valor (fórmula)</label>
+                                                <input
+                                                    className="input"
+                                                    value={resultCenterValorDisplay(line)}
+                                                    onChange={e =>
+                                                        updateResultCenterRow(idx, {
+                                                            lineTotalFormula: e.target.value,
+                                                            unitPriceFormula: '',
+                                                            quantityFormula: '',
+                                                        })
+                                                    }
+                                                    placeholder="{e1_valor} * 0.5"
+                                                />
+                                                <p style={{ fontSize: '0.68rem', color: 'var(--secondary)', marginTop: '0.35rem', marginBottom: 0, lineHeight: 1.35 }}>
+                                                    Expressão numérica = valor total da linha no SAP (Quantity=1, UnitPrice=resultado). Use {'{campo}'} do título.
+                                                </p>
+                                            </div>
+                                            <div style={{ paddingTop: '1.4rem' }}>
+                                                <button type="button" onClick={() => removeResultCenterRow(idx)} style={{ color: 'var(--error)' }} title="Remover">
+                                                    <Trash2 size={18} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {selectedTableCode === 'SE1010' && rawTargetObject === 'Orders' && (
+                        <div style={{ marginTop: '1.5rem', paddingTop: '1.25rem', borderTop: '1px solid var(--card-border)' }}>
+                            <h3 style={{ fontSize: '1.05rem', marginBottom: '0.5rem', color: 'var(--accent)' }}>
+                                Linhas do pedido (fórmulas) — vários produtos
+                            </h3>
+                            <p style={{ fontSize: '0.82rem', color: 'var(--secondary)', marginBottom: '1rem', lineHeight: 1.45 }}>
+                                Ignorado se <strong>Centros de resultado</strong> acima tiver linhas salvas. Caso contrário, se houver ao menos uma linha com ItemCode preenchido, o sistema <strong>substitui</strong> o{' '}
+                                <code>DocumentLines</code> gerado pelo mapeamento plano acima. Use{' '}
+                                <code>{'{e1_valor}'}</code>, <code>{'{campo}'}</code> nas fórmulas. Informe{' '}
+                                <strong>preço unitário</strong> ou <strong>total da linha</strong> (não ambos). Atualização (PATCH)
+                                de pedido no SAP <strong>não altera linhas</strong>; desmembramento aplica principalmente em novas inclusões.
+                            </p>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem', alignItems: 'flex-end' }}>
+                                <div>
+                                    <label className="label" style={{ fontSize: '0.8rem' }}>Campo para conferência (opcional)</label>
+                                    <input
+                                        className="input"
+                                        style={{ width: '160px' }}
+                                        value={orderLineTplDraft.compareTotalField ?? ''}
+                                        onChange={e => setOrderLineTplDraft(p => ({ ...p, compareTotalField: e.target.value }))}
+                                        placeholder="e1_valor"
+                                    />
+                                </div>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={orderLineTplDraft.reconcileLastLine ?? false}
+                                        onChange={e => setOrderLineTplDraft(p => ({ ...p, reconcileLastLine: e.target.checked }))}
+                                    />
+                                    Ajustar última linha para fechar com o campo acima
+                                </label>
+                                <button type="button" className="btn btn-primary" onClick={saveOrderLineTemplates}>
+                                    <Save size={16} style={{ marginRight: '0.35rem' }} />
+                                    Salvar linhas do pedido
+                                </button>
+                                <button type="button" className="btn btn-secondary" onClick={addOrderLineRow}>
+                                    <Plus size={16} style={{ marginRight: '0.35rem' }} />
+                                    Adicionar linha
+                                </button>
+                            </div>
+                            {orderLineTplDraft.lines.length === 0 ? (
+                                <p style={{ fontSize: '0.85rem', color: 'var(--secondary)' }}>
+                                    Nenhuma linha extra. Clique em &quot;Adicionar linha&quot; ou salve vazio para usar só o mapeamento plano (uma linha por título).
+                                </p>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                    {orderLineTplDraft.lines.map((line, idx) => (
+                                        <div
+                                            key={idx}
+                                            style={{
+                                                display: 'grid',
+                                                gridTemplateColumns: '1fr 120px 1fr 1fr 40px',
+                                                gap: '0.5rem',
+                                                alignItems: 'start',
+                                                padding: '0.75rem',
+                                                backgroundColor: 'var(--background)',
+                                                borderRadius: '8px',
+                                                border: '1px solid var(--card-border)',
+                                            }}
+                                        >
+                                            <div>
+                                                <label className="label" style={{ fontSize: '0.75rem' }}>ItemCode (ou {'{campo}'})</label>
+                                                <input
+                                                    className="input"
+                                                    value={line.itemCode}
+                                                    onChange={e => updateOrderLineRow(idx, { itemCode: e.target.value })}
+                                                    placeholder="004 ou {e1_xtipo}"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="label" style={{ fontSize: '0.75rem' }}>Qtd (fórmula)</label>
+                                                <input
+                                                    className="input"
+                                                    value={line.quantityFormula ?? ''}
+                                                    onChange={e => updateOrderLineRow(idx, { quantityFormula: e.target.value })}
+                                                    placeholder="1"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="label" style={{ fontSize: '0.75rem' }}>Preço unitário (fórmula)</label>
+                                                <input
+                                                    className="input"
+                                                    value={line.unitPriceFormula ?? ''}
+                                                    onChange={e => updateOrderLineRow(idx, { unitPriceFormula: e.target.value, lineTotalFormula: '' })}
+                                                    placeholder="{e1_valor} * 0.6"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="label" style={{ fontSize: '0.75rem' }}>Total linha (fórmula)</label>
+                                                <input
+                                                    className="input"
+                                                    value={line.lineTotalFormula ?? ''}
+                                                    onChange={e => updateOrderLineRow(idx, { lineTotalFormula: e.target.value, unitPriceFormula: '' })}
+                                                    placeholder="alternativa ao preço unit."
+                                                />
+                                            </div>
+                                            <div style={{ paddingTop: '1.4rem' }}>
+                                                <button type="button" onClick={() => removeOrderLineRow(idx)} style={{ color: 'var(--error)' }} title="Remover">
+                                                    <Trash2 size={18} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -711,6 +1219,49 @@ export default function MappingPage() {
                             {/* Target */}
                             <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                                 <h3 style={{ marginBottom: '1rem', color: 'var(--success)' }}>Destino (Objeto SAP)</h3>
+                                {Array.isArray((previewData.target as any)._resultCenterFormulaExecutions) &&
+                                    (previewData.target as any)._resultCenterFormulaExecutions.length > 0 && (
+                                    <div
+                                        style={{
+                                            marginBottom: '0.75rem',
+                                            padding: '0.75rem',
+                                            backgroundColor: '#12121a',
+                                            border: '1px solid var(--card-border)',
+                                            borderRadius: '8px',
+                                            fontFamily: 'monospace',
+                                            fontSize: '0.8rem',
+                                            maxHeight: '28%',
+                                            overflow: 'auto',
+                                        }}
+                                    >
+                                        <div style={{ color: 'var(--accent)', marginBottom: '0.5rem', fontWeight: 600 }}>
+                                            Fórmulas por centro (template → substituída → eval)
+                                        </div>
+                                        {(previewData.target as any)._resultCenterFormulaExecutions.map((ex: any) => (
+                                            <div key={ex.centerIndex} style={{ marginBottom: '0.75rem', borderLeft: '3px solid var(--success)', paddingLeft: '0.5rem' }}>
+                                                <div style={{ color: 'var(--secondary)' }}>
+                                                    Centro {ex.centerIndex} · {ex.centerCode} · {ex.mode}
+                                                </div>
+                                                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                                                    <span style={{ opacity: 0.75 }}>template: </span>
+                                                    {ex.formulaTemplate}
+                                                </div>
+                                                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: '#a8d4a8' }}>
+                                                    <span style={{ opacity: 0.75 }}>substituída: </span>
+                                                    {ex.substitutedExpression}
+                                                </div>
+                                                <div>
+                                                    <span style={{ opacity: 0.75 }}>qty: </span>
+                                                    {ex.quantitySubstituted} → {ex.quantity} ·{' '}
+                                                    <span style={{ opacity: 0.75 }}>eval principal: </span>
+                                                    {ex.evaluatedMain} ·{' '}
+                                                    <span style={{ opacity: 0.75 }}>valor linha (Q×P): </span>
+                                                    {ex.monetaryAmount}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                                 <div style={{ flex: 1, overflow: 'auto', backgroundColor: '#000', padding: '1rem', borderRadius: '8px', fontFamily: 'monospace', fontSize: '0.9rem' }}>
                                     <pre>{JSON.stringify(previewData.target, null, 2)}</pre>
                                 </div>
@@ -742,6 +1293,7 @@ export default function MappingPage() {
                             }}>
                                 <option value="none">Nenhuma (Cópia Direta)</option>
                                 <option value="static">Valor Fixo (static — literal)</option>
+                                <option value="today">Data do dia — hoje (na integração, tipo Today())</option>
                                 <option value="expression">Expressão com Templates (ex: {'{campo1}/{campo2}'})</option>
                                 <option value="prefix">Adicionar Prefixo</option>
                                 <option value="suffix">Adicionar Sufixo</option>
@@ -776,6 +1328,26 @@ export default function MappingPage() {
                                 />
                                 <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem' }}>
                                     Este valor será enviado <strong>literalmente</strong> para o campo SAP, independente do valor de origem.
+                                </p>
+                            </div>
+                        )}
+
+                        {ruleType === 'today' && (
+                            <div className="input-group">
+                                <label className="label">Formato da data (calendário America/São_Paulo)</label>
+                                <select
+                                    className="input"
+                                    value={ruleValue || 'iso'}
+                                    onChange={(e) => setRuleValue(e.target.value)}
+                                >
+                                    <option value="iso">YYYY-MM-DD (DocDate / campos data SAP)</option>
+                                    <option value="yyyymmdd">YYYYMMDD</option>
+                                    <option value="br">DD/MM/YYYY</option>
+                                    <option value="isodt">YYYY-MM-DDTHH:mm:ss (meia-noite)</option>
+                                    <option value="iso_z">YYYY-MM-DDT00:00:00Z (UTC)</option>
+                                </select>
+                                <p style={{ fontSize: '0.8rem', color: 'var(--secondary)', marginTop: '0.5rem', lineHeight: 1.45 }}>
+                                    No preview o JSON mostra <code>{runtimeTodayPlaceholder('iso')}</code> (marcador). Ao clicar em integrar, a API substitui pela <strong>data do dia</strong> naquele momento — como um <code>Today()</code>.
                                 </p>
                             </div>
                         )}

@@ -4,7 +4,10 @@ import path from 'path';
 import { AppConfig } from '@/types/config';
 import { createClient } from '@supabase/supabase-js';
 import { TableMapping } from '@/types/mapping';
-import { TransformationUtils } from '@/utils/transformations';
+import { buildOrderLinesFromTemplates } from '@/utils/orderLineTemplates';
+import { buildResultCenterDocumentLines } from '@/utils/resultCenterDistribution';
+import { TransformationUtils, runtimeTodayPlaceholder } from '@/utils/transformations';
+import { fetchContactEmployeesForBusinessPartner } from '@/utils/sapContactEmployees';
 
 // Load config
 const CONFIG_FILE = path.join(process.cwd(), 'config.json');
@@ -50,6 +53,19 @@ function readSourceByAliases(source: any, aliases: string[]): any {
         if (val !== undefined && val !== null && String(val).trim() !== '') return val;
     }
     return undefined;
+}
+
+function isOrderCancelled(order: any): boolean {
+    const raw = order?.CANCELED ?? order?.Cancelled ?? order?.Canceled ?? order?.cancelled;
+    if (raw === undefined || raw === null) return false;
+    const normalized = String(raw).trim().toUpperCase();
+    return normalized === 'Y' || normalized === 'TYES' || normalized === 'YES' || normalized === 'TRUE' || normalized === '1';
+}
+
+function isSalesOrderDraftObjectCode(raw: unknown): boolean {
+    const normalized = String(raw ?? '').trim().toLowerCase();
+    if (!normalized) return true; // alguns ambientes não retornam DocObjectCode no select
+    return normalized === '17' || normalized === '17.0' || normalized === 'oorders' || normalized === 'orders';
 }
 
 function normalizeTargetPayloadKeys(target: any, targetObject: string): any {
@@ -172,7 +188,12 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
         if (!field.target) continue;
 
         // Para tipo 'static', 'expression' ou 'sap_sequence', source não é obrigatório
-        const isSourceOptional = field.rule?.type === 'static' || field.rule?.type === 'sap_sequence' || field.rule?.type === 'expression' || field.rule?.type === 'lookup_composite';
+        const isSourceOptional =
+            field.rule?.type === 'static' ||
+            field.rule?.type === 'sap_sequence' ||
+            field.rule?.type === 'expression' ||
+            field.rule?.type === 'lookup_composite' ||
+            field.rule?.type === 'today';
         if (!isSourceOptional && !field.source) continue;
 
         let originalValue = field.source
@@ -213,6 +234,10 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
                 case 'suffix':
                     finalValue = originalValue + (field.rule.value || '');
                     break;
+                case 'today': {
+                    finalValue = runtimeTodayPlaceholder(field.rule.value || 'iso');
+                    break;
+                }
                 case 'static': {
                     // Auto-coerção de tipo: '1' → 1, 'true'/'false' → boolean, resto → string
                     const raw = field.rule.value ?? null;
@@ -404,16 +429,16 @@ async function transformRecord(sourceRecord: any, mapping: TableMapping, supabas
         }
     }
 
-    if (sapObject === 'BusinessPartners') {
-        const hasSapSequenceCardCode = mapping.fields.some(f => f.target === 'CardCode' && f.rule?.type === 'sap_sequence');
-        if (!targetRecord.CardCode && !hasSapSequenceCardCode) {
-            targetRecord.CardCode = sourceRecord['a1_cod'] || sourceRecord['A1_COD'];
-        }
+        if (sapObject === 'BusinessPartners') {
+            const hasSapSequenceCardCode = mapping.fields.some(f => f.target === 'CardCode' && f.rule?.type === 'sap_sequence');
+            if (!targetRecord.CardCode && !hasSapSequenceCardCode) {
+                targetRecord.CardCode = sourceRecord['a1_cod'] || sourceRecord['A1_COD'];
+            }
 
-        if (!targetRecord.CardType) {
-            if (mapping.sourceTable.startsWith('SA1')) targetRecord.CardType = 'C';
-            else if (mapping.sourceTable.startsWith('SA2')) targetRecord.CardType = 'S';
-        }
+            if (!targetRecord.CardType) {
+                if (mapping.sourceTable.startsWith('SA1')) targetRecord.CardType = 'C';
+                else if (mapping.sourceTable.startsWith('SA2')) targetRecord.CardType = 'S';
+            }
 
         if (targetRecord.BPAddresses && targetRecord.BPAddresses.length > 0) {
             if (!targetRecord.BPAddresses[0].AddressName) targetRecord.BPAddresses[0].AddressName = "Cobranca";
@@ -440,6 +465,12 @@ export async function POST(request: Request) {
     try {
         const body = await request.json();
         const { entityId, table, sourceTable, limit = 50, offset = 0, duplicateAddress = false, bplId, filters = {}, excelFilters = [] } = body;
+
+        // PostgREST: offset negativo ou range inválido → 416 Requested range not satisfiable
+        const rawLim = Number(limit);
+        const rawOff = Number(offset);
+        const safeLimit = Number.isFinite(rawLim) ? Math.min(500, Math.max(1, Math.floor(rawLim))) : 50;
+        const safeOffset = Number.isFinite(rawOff) ? Math.max(0, Math.floor(rawOff)) : 0;
 
         const config = await getConfig();
         const supabase = createClient(config.supabase.url, config.supabase.key, { auth: { persistSession: false } });
@@ -527,7 +558,18 @@ export async function POST(request: Request) {
         // Importa apenas títulos da filial 01
         if (table === 'SE1010') {
             query = query.eq('e1_filial', '01');
-            console.log('[SE1010] Filtro fixo: e1_filial = 01');
+            // Alinhado à importação Protheus: exclui tipos que contenham '-' (ex.: IR-, CF-)
+            query = query.not('e1_tipo', 'like', '%-%');
+            console.log('[SE1010] Filtro fixo: e1_filial = 01, e1_tipo sem hífen');
+        }
+        if (table === 'SE2010') {
+            query = query.not('e2_tipo', 'like', '%-%');
+            console.log('[SE2010] Filtro fixo: e2_tipo sem hífen');
+        }
+        if (table === 'SU5010') {
+            // Alinhado à importação Protheus: exige cliente (U5_CLIENTE / e5_cliente no PG)
+            query = query.not('u5_cliente', 'is', null).neq('u5_cliente', '');
+            console.log('[SU5010] Filtro fixo: u5_cliente não vazio');
         }
 
         // Aplica filtro de período se disponível
@@ -599,18 +641,20 @@ export async function POST(request: Request) {
             if (activeFilters.length) console.log(`[Filters] ${table} filtros ativos:`, activeFilters);
         }
 
-        // ── Filtros manuais do usuário (SA1010 / SA2010 / SB1010) ────────────────
-        const CATALOG_TABLES = ['SA1010', 'SA2010', 'SB1010'];
+        // ── Filtros manuais do usuário (SA1010 / SA2010 / SB1010 / SU5010) ───────
+        const CATALOG_TABLES = ['SA1010', 'SA2010', 'SB1010', 'SU5010'];
         if (CATALOG_TABLES.includes(table)) {
             const CATALOG_FIELD_MAP: Record<string, Record<string, string>> = {
                 SA1010: { codigo: 'a1_cod', loja: 'a1_loja', nome: 'a1_nome', filial: 'a1_filial', empfat: 'a1_empfat', cgc: 'a1_cgc', estado: 'a1_est', municipio: 'a1_mun' },
                 SA2010: { codigo: 'a2_cod', loja: 'a2_loja', nome: 'a2_nome', filial: 'a2_filial', empfat: 'a2_empfat', cgc: 'a2_cgc', estado: 'a2_est', municipio: 'a2_mun' },
                 SB1010: { codigo: 'b1_cod', descricao: 'b1_desc', filial: 'b1_filial', empfat: 'b1_empfat', grupo: 'b1_grupo' },
+                SU5010: { codigo: 'u5_cliente', loja: 'u5_loja', nome: 'u5_contat', filial: 'u5_filial', codcont: 'u5_codcont' },
             };
             const cfm = CATALOG_FIELD_MAP[table] || {};
 
             if (filters.codigo && cfm.codigo) query = query.ilike(cfm.codigo, `${filters.codigo}%`);
             if (filters.loja && cfm.loja) query = query.eq(cfm.loja, filters.loja);
+            if (filters.codcont && cfm.codcont) query = query.ilike(cfm.codcont, `${filters.codcont}%`);
             if (filters.nome && cfm.nome) query = query.ilike(cfm.nome, `%${filters.nome}%`);
             if (filters.descricao && cfm.descricao) query = query.ilike(cfm.descricao, `%${filters.descricao}%`);
             if (filters.filial && cfm.filial) query = query.eq(cfm.filial, filters.filial);
@@ -630,7 +674,7 @@ export async function POST(request: Request) {
             if (activeFilters.length) console.log(`[Filters] ${table} filtros ativos:`, activeFilters);
         }
 
-        const { data: sourceData, error } = await query.range(offset, offset + limit - 1);
+        const { data: sourceData, error } = await query.range(safeOffset, safeOffset + safeLimit - 1);
 
         if (error) throw error;
         if (!sourceData || sourceData.length === 0) {
@@ -964,13 +1008,20 @@ export async function POST(request: Request) {
                 // ── SE1010 → Sales Orders SAP B1 ──────────────────────────────────
                 const src = row;
 
-                // DocDueDate e TaxDate a partir de E1_VENCREA
+                // DocDueDate a partir de E1_VENCREA; DocDate / TaxDate na integração (execute = hoje; preview = marcador)
                 const vencreaRaw1 = (src.e1_vencrea || '').trim().replace(/\D/g, '');
+                let vencreaIso: string | undefined;
                 if (vencreaRaw1.length === 8) {
-                    const vencreaDate = `${vencreaRaw1.slice(0, 4)}-${vencreaRaw1.slice(4, 6)}-${vencreaRaw1.slice(6, 8)}`;
-                    targetRec.DocDueDate = vencreaDate;
-                    targetRec.TaxDate = vencreaDate;
-                    targetRec.DocDate = vencreaDate;
+                    vencreaIso = `${vencreaRaw1.slice(0, 4)}-${vencreaRaw1.slice(4, 6)}-${vencreaRaw1.slice(6, 8)}`;
+                    targetRec.DocDueDate = vencreaIso;
+                }
+                if (table === 'SE1010') {
+                    const runToday = runtimeTodayPlaceholder('iso');
+                    targetRec.DocDate = runToday;
+                    targetRec.TaxDate = runToday;
+                } else if (vencreaIso) {
+                    targetRec.DocDate = vencreaIso;
+                    targetRec.TaxDate = vencreaIso;
                 }
 
                 // ── Chave de deduplicação: CLIENTE/PREFIXO/NUMERO/PARCELA/TIPO ──
@@ -986,6 +1037,44 @@ export async function POST(request: Request) {
                 // NumAtCard = chave composta usada para busca de duplicata no SAP
                 targetRec.NumAtCard = fullKey1.slice(0, 100);
                 targetRec._fullKey = fullKey1;
+
+                // ── SE1010: Centro de resultado (Dim. 2) — precede orderLineTemplates ─
+                const rawDl0 = targetRec.DocumentLines;
+                const baseLineObj = Array.isArray(rawDl0) ? rawDl0[0] : rawDl0;
+                if (
+                    table === 'SE1010' &&
+                    mapping.resultCenterDistribution?.lines?.length
+                ) {
+                    const builtRc = buildResultCenterDocumentLines(
+                        src,
+                        mapping.resultCenterDistribution,
+                        baseLineObj && typeof baseLineObj === 'object' ? baseLineObj : {}
+                    );
+                    if (builtRc.lines.length > 0) {
+                        targetRec.DocumentLines = builtRc.lines;
+                        targetRec._resultCenterFormulaExecutions = builtRc.formulaExecutions;
+                        targetRec._resultCenterDistributionMeta = {
+                            inWhichDimension: mapping.resultCenterDistribution?.inWhichDimension ?? 2,
+                            distributionMode: mapping.resultCenterDistribution?.distributionMode,
+                            lineDimensionField: mapping.resultCenterDistribution?.lineDimensionField ?? 'CostingCode2',
+                        };
+                        if (builtRc.warnings.length > 0) {
+                            targetRec._resultCenterDistributionWarnings = builtRc.warnings;
+                        }
+                    }
+                } else if (
+                    table === 'SE1010' &&
+                    mapping.orderLineTemplates?.lines?.length
+                ) {
+                    // ── SE1010: várias linhas por produto (orderLineTemplates) ───────
+                    const built = buildOrderLinesFromTemplates(src, mapping.orderLineTemplates);
+                    if (built.lines.length > 0) {
+                        targetRec.DocumentLines = built.lines;
+                        if (built.warnings.length > 0) {
+                            targetRec._orderLineTemplateWarnings = built.warnings;
+                        }
+                    }
+                }
 
                 // ── DocumentLines: SAP B1 exige ARRAY — converter objeto aninhado ──
                 // transformRecord() cria { DocumentLines: { Quantity, ItemCode, ... } }
@@ -1146,6 +1235,109 @@ export async function POST(request: Request) {
                     };
                 }
             }
+        } else if (mapping.targetObject === 'ContactEmployees') {
+            // ── SU5010 → ContactEmployees: LineNum em __sap_id; fallback por nome ──
+            const recnosCe = sourceData.map((r: any) => r.r_e_c_n_o_).filter(Boolean);
+            const recnoToLineFromDb: Record<number, string> = {};
+            if (recnosCe.length > 0 && table === 'SU5010') {
+                try {
+                    const { data: ceDb } = await supabase
+                        .from('su5010')
+                        .select('r_e_c_n_o_, __sap_id')
+                        .in('r_e_c_n_o_', recnosCe)
+                        .not('__sap_id', 'is', null);
+                    (ceDb || []).forEach((row: any) => {
+                        if (row.r_e_c_n_o_ != null && row.__sap_id != null && String(row.__sap_id).trim() !== '') {
+                            recnoToLineFromDb[row.r_e_c_n_o_] = String(row.__sap_id).trim();
+                        }
+                    });
+                } catch (e) {
+                    console.warn('[ContactEmployees preview] __sap_id lookup:', e);
+                }
+            }
+
+            const normalizeName = (s: string) => String(s || '').trim().toLowerCase();
+
+            for (const item of transformedRows) {
+                const cardCode = String(item.target.CardCode || '').trim();
+                const nm = String(item.target.Name || '').trim();
+                if (!cardCode || !nm) {
+                    results.push({
+                        source: item.source,
+                        target: item.target,
+                        existsInSap: false,
+                        action: 'insert',
+                        message: !cardCode
+                            ? 'CardCode ausente — cliente sem __sap_id no SA1010 (lookup).'
+                            : 'Nome do contato (U5_CONTAT) ausente.',
+                    });
+                    continue;
+                }
+
+                let exists = false;
+                let lineNum: number | undefined;
+                let msg: string | undefined;
+
+                const recno = item.source?.r_e_c_n_o_;
+                const lineFromDb = recno != null ? recnoToLineFromDb[recno] : undefined;
+
+                if (cookies) {
+                    try {
+                        const ceFetch = await fetchContactEmployeesForBusinessPartner(
+                            config.sap.serviceLayerUrl,
+                            cookies,
+                            cardCode
+                        );
+                        if (ceFetch.businessPartnerError) {
+                            msg = ceFetch.businessPartnerError;
+                        } else {
+                            const contacts: any[] = ceFetch.contacts;
+                            if (ceFetch.contactListWarning) {
+                                msg = ceFetch.contactListWarning;
+                            }
+
+                            if (lineFromDb !== undefined) {
+                                const want = Number(lineFromDb);
+                                if (Number.isFinite(want)) {
+                                    const hit = contacts.find(
+                                        (c: any) => Number(c?.LineNum) === want || String(c?.LineNum) === String(lineFromDb)
+                                    );
+                                    if (hit) {
+                                        exists = true;
+                                        lineNum = Number(hit.LineNum);
+                                    }
+                                }
+                            }
+                            if (!exists) {
+                                const hitName = contacts.find(
+                                    (c: any) => normalizeName(c?.Name) === normalizeName(nm)
+                                );
+                                if (hitName) {
+                                    exists = true;
+                                    lineNum = Number(hitName.LineNum);
+                                    msg = `Contato encontrado no SAP pelo nome (LineNum: ${lineNum}).`;
+                                }
+                            }
+                        }
+                    } catch (e: any) {
+                        msg = `Erro ao consultar contatos no SAP: ${e.message}`;
+                    }
+                } else {
+                    msg = 'Sessão SAP indisponível — deduplicação ignorada.';
+                }
+
+                if (exists && lineNum !== undefined && Number.isFinite(lineNum)) {
+                    item.target._contactLineNum = lineNum;
+                }
+
+                results.push({
+                    source: item.source,
+                    target: item.target,
+                    existsInSap: exists,
+                    action: exists ? 'update' : 'insert',
+                    message: msg,
+                });
+            }
         } else if (
             mapping.targetObject === 'JournalEntries' ||
             mapping.targetObject === 'Invoices'
@@ -1242,28 +1434,77 @@ export async function POST(request: Request) {
                 });
             });
         } else if (mapping.targetObject === 'Orders') {
-            // ── SE1010 → Orders: deduplicação por NumAtCard ──────────────────────
+            // ── SE1010 → Drafts (Sales Order): deduplicação por NumAtCard ────────
             // NumAtCard = CLIENTE/PREFIXO/NUMERO/PARCELA/TIPO
-            // Primário: sap_jdt_num salvo no Supabase (write-back após INSERT)
-            // Fallback: busca no SAP por NumAtCard
+            // Primário: sap_jdt_num salvo no Supabase (reutilizado como DocEntry)
+            // Fallback: busca no SAP por NumAtCard em Drafts
 
             const fullKeyToDocEntry: Record<string, number> = {};
+            const useDraftsForSe1010 = table === 'SE1010';
 
-            // 1. Primário: sap_jdt_num no Supabase (reutilizamos o campo como doc_entry)
+            // 1. Primário: __sap_id no Supabase (write-back atual)
             const recnosOrders = sourceData.map((r: any) => r.r_e_c_n_o_).filter(Boolean);
             if (recnosOrders.length > 0) {
                 try {
                     const { data: docRows } = await supabase
                         .from('se1010')
-                        .select('r_e_c_n_o_, sap_jdt_num')
+                        .select('r_e_c_n_o_, __sap_id')
                         .in('r_e_c_n_o_', recnosOrders)
-                        .not('sap_jdt_num', 'is', null);
+                        .not('__sap_id', 'is', null);
 
-                    (docRows || []).forEach((row: any) => {
-                        const fk = transformedRows.find(t => t.source?.r_e_c_n_o_ === row.r_e_c_n_o_)?.target?._fullKey;
-                        if (fk && row.sap_jdt_num) fullKeyToDocEntry[fk] = row.sap_jdt_num;
+                    const recnoToFullKey: Record<string, string> = {};
+                    transformedRows.forEach((t: any) => {
+                        const recno = t?.source?.r_e_c_n_o_;
+                        const fk = t?.target?._fullKey;
+                        if (recno !== undefined && recno !== null && fk) {
+                            recnoToFullKey[String(recno)] = fk;
+                        }
                     });
-                } catch (e) { console.warn('[Orders dedup] sap_jdt_num lookup falhou:', e); }
+
+                    for (const row of (docRows || [])) {
+                        const fk = recnoToFullKey[String(row.r_e_c_n_o_)];
+                        if (!fk || !row.__sap_id) continue;
+
+                        const docEntry = Number(row.__sap_id);
+                        if (!Number.isFinite(docEntry) || docEntry <= 0) continue;
+
+                        if (useDraftsForSe1010) {
+                            try {
+                                const draftUrl = `${config.sap.serviceLayerUrl}/Drafts(${docEntry})?$select=DocEntry,DocObjectCode`;
+                                const draftRes = await fetch(draftUrl, { headers: { 'Cookie': cookies || '' } });
+                                if (!draftRes.ok) continue;
+                                const draftJson = await draftRes.json();
+                                const objCode = draftJson?.DocObjectCode;
+                                if (isSalesOrderDraftObjectCode(objCode)) {
+                                    fullKeyToDocEntry[fk] = docEntry;
+                                }
+                            } catch {
+                                /* ignore */
+                            }
+                        } else {
+                            try {
+                                const statusUrl = `${config.sap.serviceLayerUrl}/Orders(${docEntry})?$select=DocEntry,CANCELED,Cancelled`;
+                                const statusRes = await fetch(statusUrl, { headers: { 'Cookie': cookies || '' } });
+                                if (!statusRes.ok) {
+                                    // Se não conseguimos validar status, preserva vínculo existente para evitar duplicação indevida.
+                                    fullKeyToDocEntry[fk] = docEntry;
+                                    continue;
+                                }
+
+                                const statusJson = await statusRes.json();
+                                if (isOrderCancelled(statusJson)) {
+                                    console.log(`[Orders dedup] sap_jdt_num=${docEntry} está cancelado (CANCELED=Y). Mantendo INSERT para "${fk}".`);
+                                    continue;
+                                }
+
+                                fullKeyToDocEntry[fk] = docEntry;
+                            } catch {
+                                // Em caso de falha transitória no check, mantém o vínculo atual para comportamento estável.
+                                fullKeyToDocEntry[fk] = docEntry;
+                            }
+                        }
+                    }
+                } catch (e) { console.warn('[Orders dedup] __sap_id lookup falhou:', e); }
             }
 
             // 2. Fallback: busca no SAP por NumAtCard
@@ -1276,16 +1517,34 @@ export async function POST(request: Request) {
                     if (!numAtCard) continue;
 
                     const filterQ = `NumAtCard eq '${numAtCard}'`;
-                    const checkUrl = `${config.sap.serviceLayerUrl}/Orders?$select=DocEntry,NumAtCard&$filter=${encodeURIComponent(filterQ)}&$top=1`;
+                    const checkUrl = useDraftsForSe1010
+                        ? `${config.sap.serviceLayerUrl}/Drafts?$select=DocEntry,NumAtCard,DocObjectCode&$filter=${encodeURIComponent(filterQ)}&$orderby=DocEntry desc&$top=20`
+                        : `${config.sap.serviceLayerUrl}/Orders?$select=DocEntry,NumAtCard,CANCELED,Cancelled&$filter=${encodeURIComponent(filterQ)}&$orderby=DocEntry desc&$top=20`;
                     try {
                         const res = await fetch(checkUrl, { headers: { 'Cookie': cookies } });
                         if (res.ok) {
                             const j = await res.json();
-                            const found = (j.value || [])[0];
-                            if (found?.DocEntry) {
-                                fullKeyToDocEntry[fk] = found.DocEntry;
-                                console.log(`[Orders dedup] NumAtCard match: DocEntry=${found.DocEntry} para "${fk}"`);
+                            const matches = (j.value || []).filter((o: any) => !!o?.DocEntry);
+                            if (useDraftsForSe1010) {
+                                const draftMatch = matches.find((o: any) => {
+                                    return isSalesOrderDraftObjectCode(o?.DocObjectCode);
+                                });
+                                const fallbackMatch = matches[0];
+                                const selectedMatch = draftMatch || fallbackMatch;
+                                if (selectedMatch?.DocEntry) {
+                                    fullKeyToDocEntry[fk] = selectedMatch.DocEntry;
+                                }
+                            } else {
+                                const activeMatch = matches.find((o: any) => !isOrderCancelled(o));
+                                if (activeMatch?.DocEntry) {
+                                    fullKeyToDocEntry[fk] = activeMatch.DocEntry;
+                                    console.log(`[Orders dedup] NumAtCard match ativo: DocEntry=${activeMatch.DocEntry} para "${fk}"`);
+                                } else if (matches.length > 0) {
+                                    console.log(`[Orders dedup] Somente pedidos cancelados encontrados para "${fk}". Mantendo INSERT.`);
+                                }
                             }
+                        } else if (useDraftsForSe1010) {
+                            console.warn(`[Drafts dedup] consulta Drafts falhou (${res.status}) para NumAtCard="${numAtCard}"`);
                         }
                     } catch { /* ignore */ }
                 }
@@ -1301,14 +1560,27 @@ export async function POST(request: Request) {
                     item.target._sapDocEntry = existingDocEntry;
                 }
 
+                const tplWarns = item.target._orderLineTemplateWarnings as string[] | undefined;
+                const rcWarns = item.target._resultCenterDistributionWarnings as string[] | undefined;
+                const baseMsg = exists
+                    ? useDraftsForSe1010
+                        ? `Draft já existente (DocEntry: ${existingDocEntry})`
+                        : `Sales Order já integrada (DocEntry: ${existingDocEntry})`
+                    : undefined;
+                const tplMsg = tplWarns?.length
+                    ? `Linhas (produtos): ${tplWarns.join(' | ')}`
+                    : undefined;
+                const rcMsg = rcWarns?.length
+                    ? `Centros de resultado: ${rcWarns.join(' | ')}`
+                    : undefined;
+                const combinedMsg = [baseMsg, rcMsg, tplMsg].filter(Boolean).join(' — ') || undefined;
+
                 results.push({
                     source: item.source,
                     target: item.target,
                     existsInSap: exists,
                     action: exists ? 'update' : 'insert',
-                    message: exists
-                        ? `Sales Order já integrada (DocEntry: ${existingDocEntry})`
-                        : undefined
+                    message: combinedMsg
                 });
             });
         } else {
