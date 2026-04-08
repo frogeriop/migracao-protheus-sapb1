@@ -6,6 +6,8 @@
     "dev": "next dev -p 3003",
     "build": "next build",
     "start": "next start -p 3003",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "pm2:start": "pm2 start npm --name 'migracao-protheus' -- run dev",
     "pm2:stop": "pm2 stop migracao-protheus",
     "pm2:restart": "pm2 restart migracao-protheus",
@@ -28,10 +30,12 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@opennextjs/cloudflare": "^1.18.1",
     "@types/mssql": "^9.1.9",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "wrangler": "^4.81.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "typescript": "^5"
