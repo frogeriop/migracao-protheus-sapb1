@@ -74,6 +74,11 @@ export default function MappingPage() {
     const [tableOptions, setTableOptions] = useState<TableOption[]>(PROTHEUS_TABLE_OPTIONS);
     const [selectedTableCode, setSelectedTableCode] = useState<string>('SA1010');
     const [sourceColumns, setSourceColumns] = useState<string[]>([]);
+    const [loadingSourceCols, setLoadingSourceCols] = useState(false);
+
+    // Campos de usuário (UDFs) do SAP — carregados dinamicamente por objeto
+    const [sapUserFields, setSapUserFields] = useState<string[]>([]);
+    const [loadingUserFields, setLoadingUserFields] = useState(false);
 
     const selectedTableOpt = tableOptions.find(o => o.code === selectedTableCode) || PROTHEUS_TABLE_OPTIONS[0];
     const rawTargetObject = selectedTableOpt.targetObject || 'Unknown';
@@ -264,11 +269,14 @@ export default function MappingPage() {
 
     // Fetch Source Cols on Table Select
     useEffect(() => {
+        if (!queryTableName) return;
+        let cancelled = false;
         const fetchCols = async () => {
-            if (!queryTableName) return;
+            setLoadingSourceCols(true);
             try {
                 const res = await fetch(`/api/data?action=columns&table=${queryTableName}`);
                 const json = await res.json();
+                if (cancelled) return;
                 if (json.success && Array.isArray(json.data) && json.data.length > 0) {
                     const hiddenCols = ['id', 'd_e_l_e_t_', '__source_key', '__sap_id', '__integration_status', '__sync_message', '__last_sync', 'r_e_c_n_o_'];
                     const cols = json.data.filter((c: string) => !hiddenCols.includes(c));
@@ -277,11 +285,41 @@ export default function MappingPage() {
                     setSourceColumns(['(Tabela vazia ou sem estrutura)']);
                 }
             } catch (e) {
-                console.error(e);
+                if (!cancelled) console.error(e);
+            } finally {
+                if (!cancelled) setLoadingSourceCols(false);
             }
         };
         fetchCols();
+        return () => { cancelled = true; };
     }, [queryTableName]);
+
+    // Busca campos de usuário (UDFs) do SAP ao mudar o objeto destino
+    useEffect(() => {
+        if (!rawTargetObject || rawTargetObject === 'Unknown') {
+            setSapUserFields([]);
+            return;
+        }
+        let cancelled = false;
+        const fetchUserFields = async () => {
+            setLoadingUserFields(true);
+            try {
+                const res = await fetch(`/api/sap/user-fields?object=${encodeURIComponent(rawTargetObject)}`);
+                const json = await res.json();
+                if (!cancelled && json.success && Array.isArray(json.fields)) {
+                    setSapUserFields(json.fields);
+                } else if (!cancelled) {
+                    setSapUserFields([]);
+                }
+            } catch {
+                if (!cancelled) setSapUserFields([]);
+            } finally {
+                if (!cancelled) setLoadingUserFields(false);
+            }
+        };
+        fetchUserFields();
+        return () => { cancelled = true; };
+    }, [rawTargetObject]);
 
 
 
@@ -830,7 +868,21 @@ export default function MappingPage() {
                                 }}>
                                     {/* Source Field */}
                                     <div>
-                                        <label className="label" style={{ marginBottom: '0.25rem' }}>Origem {selectedTableOpt.isExcel ? '(Planilha)' : '(Protheus)'}</label>
+                                        <label className="label" style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                            Origem {selectedTableOpt.isExcel ? '(Planilha)' : '(Protheus)'}
+                                            {loadingSourceCols && (
+                                                <span style={{ fontSize: '0.72rem', color: 'var(--secondary)', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 400 }}>
+                                                    <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                                                    Carregando colunas...
+                                                </span>
+                                            )}
+                                            {!loadingSourceCols && sourceColumns.length > 0 && !sourceColumns[0].startsWith('(') && (
+                                                <span style={{ fontSize: '0.7rem', color: 'var(--accent)', fontWeight: 400, background: 'rgba(56,189,248,0.1)', padding: '1px 6px', borderRadius: 10 }}>
+                                                    {sourceColumns.length} campos
+                                                </span>
+                                            )}
+                                        </label>
+
                                         {field.rule?.type === 'static' ? (
                                             <div style={{
                                                 padding: '0.5rem 0.75rem',
@@ -887,11 +939,28 @@ export default function MappingPage() {
 
                                     {/* Target Field */}
                                     <div>
-                                        <label className="label" style={{ marginBottom: '0.25rem' }}>Destino (SAP)</label>
+                                        <label className="label" style={{ marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                            Destino (SAP)
+                                            {loadingUserFields && (
+                                                <span style={{ fontSize: '0.72rem', color: 'var(--secondary)', display: 'flex', alignItems: 'center', gap: 3, fontWeight: 400 }}>
+                                                    <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} />
+                                                    Carregando UDFs...
+                                                </span>
+                                            )}
+                                            {!loadingUserFields && sapUserFields.length > 0 && (
+                                                <span style={{ fontSize: '0.7rem', color: 'var(--success)', fontWeight: 400, background: 'rgba(34,197,94,0.1)', padding: '1px 6px', borderRadius: 10 }}>
+                                                    +{sapUserFields.length} UDFs
+                                                </span>
+                                            )}
+                                        </label>
+
                                         <AutocompleteInput
                                             value={field.target}
                                             onChange={(val: string) => handleChangeField(idx, 'target', val)}
-                                            options={(COMMON_SAP_FIELDS[rawTargetObject] || []).filter(opt =>
+                                            options={[
+                                                ...(COMMON_SAP_FIELDS[rawTargetObject] || []),
+                                                ...sapUserFields,
+                                            ].filter(opt =>
                                                 // Exclude targets used in OTHER rows (allow current row's value)
                                                 !currentMapping.fields.some((f, i) => i !== idx && f.target === opt)
                                             )}

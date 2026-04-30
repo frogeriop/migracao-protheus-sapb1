@@ -571,6 +571,72 @@ export async function POST(request: Request) {
             });
         }
 
+        // --- ACTION: PATCH_COLUMNS (Sync specific columns from Protheus → Supabase) ---
+        // Use case: a new column was added to Supabase after the initial import.
+        // Body: { action: 'patch_columns', tableName: 'SA1010', columns: ['A1_PRIME', 'A1_HRSUPO'] }
+        if (action === 'patch_columns') {
+            const { columns: colsToSync } = body as { columns?: string[] };
+            if (!colsToSync || colsToSync.length === 0) {
+                return NextResponse.json({ success: false, message: 'Informe os campos a sincronizar em "columns".' }, { status: 400 });
+            }
+
+            const upperCols = colsToSync.map(c => c.toUpperCase());
+            const selectCols = ['R_E_C_N_O_', ...upperCols];
+
+            const BATCH_SIZE = 500;
+            let offset = 0;
+            let totalUpdated = 0;
+
+            // Count source rows
+            const countRes = await mssqlPool.request().query(`SELECT COUNT(*) as total FROM ${tableName} WHERE D_E_L_E_T_ <> '*'`);
+            const totalRows: number = countRes.recordset[0].total;
+
+            while (offset < totalRows) {
+                const batchQuery = `
+                    SELECT ${selectCols.join(', ')}
+                    FROM ${tableName}
+                    WHERE D_E_L_E_T_ <> '*'
+                    ORDER BY R_E_C_N_O_
+                    OFFSET ${offset} ROWS
+                    FETCH NEXT ${BATCH_SIZE} ROWS ONLY
+                `;
+                const batchResult = await mssqlPool.request().query(batchQuery);
+                const rows = batchResult.recordset;
+                if (rows.length === 0) break;
+
+                // Build upsert payload — only r_e_c_n_o_ + synced columns
+                const upsertRows = rows.map((row: any) => {
+                    const obj: Record<string, any> = { r_e_c_n_o_: row['R_E_C_N_O_'] };
+                    for (const col of colsToSync) {
+                        let val = row[col.toUpperCase()];
+                        if (typeof val === 'string') val = val.trim();
+                        obj[col.toLowerCase()] = val ?? null;
+                    }
+                    return obj;
+                });
+
+                // Upsert on r_e_c_n_o_ — updates only the specified columns, leaves others intact
+                const { error: upsertErr } = await supabase
+                    .from(pgTableName)
+                    .upsert(upsertRows, { onConflict: 'r_e_c_n_o_', ignoreDuplicates: false });
+
+                if (upsertErr) {
+                    console.error('[patch_columns] upsert error:', upsertErr.message);
+                } else {
+                    totalUpdated += rows.length;
+                }
+
+                offset += BATCH_SIZE;
+            }
+
+            return NextResponse.json({
+                success: true,
+                message: `${totalUpdated} de ${totalRows} registros sincronizados com os campos: ${colsToSync.join(', ')}`,
+                totalUpdated,
+                totalRows,
+            });
+        }
+
         // --- ACTION: BATCH (Copy Data) ---
         if (action === 'batch') {
             const batchLimit = limit || 1000;

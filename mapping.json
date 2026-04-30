@@ -151,6 +151,25 @@
       {
         "source": "a1_nome",
         "target": "AliasName"
+      },
+      {
+        "source": "a1_prime",
+        "target": "U_AF_Prime",
+        "rule": {
+          "type": "none"
+        }
+      },
+      {
+        "source": "a1_horacon",
+        "target": "U_AF_HORACON"
+      },
+      {
+        "source": "a1_horacor",
+        "target": "U_AF_HORACOR"
+      },
+      {
+        "source": "a1_hrsupo",
+        "target": "U_AF_HRSUPO"
       }
     ]
   },
@@ -397,6 +416,10 @@
             {
               "from": "9",
               "to": "009"
+            },
+            {
+              "from": "C",
+              "to": "011"
             }
           ]
         }
@@ -705,6 +728,46 @@
         "rule": {
           "type": "date_iso"
         }
+      }
+    ]
+  },
+  "SB1010": {
+    "sourceTable": "SB1010",
+    "targetObject": "Items",
+    "fields": [
+      {
+        "source": "",
+        "target": ""
+      }
+    ]
+  },
+  "EXCEL_40d6d163-99b8-416e-9950-2c9082aa2422": {
+    "sourceTable": "EXCEL_40d6d163-99b8-416e-9950-2c9082aa2422",
+    "targetObject": "Items",
+    "fields": [
+      {
+        "source": "itemcode",
+        "target": "ItemCode"
+      },
+      {
+        "source": "itemname",
+        "target": "ItemName"
+      },
+      {
+        "source": "itemsgroupcode",
+        "target": "ItemsGroupCode"
+      },
+      {
+        "source": "purchaseitem",
+        "target": "PurchaseItem"
+      },
+      {
+        "source": "salesitem",
+        "target": "SalesItem"
+      },
+      {
+        "source": "inventoryitem",
+        "target": "InventoryItem"
       }
     ]
   }
